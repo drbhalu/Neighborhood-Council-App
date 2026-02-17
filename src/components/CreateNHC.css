@@ -1,0 +1,86 @@
+/* CreateNHC.css */
+.create-nhc-container {
+  width: 100%;
+  max-width: 450px; /* Mobile width */
+  margin: 0 auto;
+  background: #fff;
+  padding: 20px;
+  box-shadow: 0 0 15px rgba(0,0,0,0.1);
+  min-height: 80vh;
+}
+
+.simple-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 20px;
+  gap: 10px;
+}
+
+.back-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: #333;
+}
+
+.nhc-input {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+.reset-btn {
+  background-color: #ef4444;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-bottom: 15px;
+  width: 100%;
+}
+
+.map-box {
+  border: 2px solid #2563eb;
+  border-radius: 10px;
+  margin-bottom: 20px;
+  z-index: 1; /* Ensure map is clickable */
+}
+
+.btn-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.btn-row button {
+  flex: 1;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-row .reset-btn {
+  background-color: #cbd5e1; /* Gray for reset */
+  color: #333;
+  margin-bottom: 0;
+}
+
+.create-btn {
+  background-color: #2563eb; /* Blue for create */
+  color: white;
+}
+
+.info-text {
+  font-size: 12px;
+  color: #666;
+  text-align: center;
+  margin-top: 10px;
+}
