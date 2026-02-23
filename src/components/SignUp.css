@@ -1,0 +1,189 @@
+/* Container & Layout */
+.signup-container {
+  max-width: 450px;
+  padding: 40px 20px;
+  margin: 0 auto;
+}
+
+.signup-content {
+  text-align: center;
+}
+
+/* Logo */
+.signup-container img {
+  max-width: 120px;
+  max-height: 150px;
+  margin-bottom: 30px;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Page Title */
+.page-title {
+  font-size: 24px;
+  margin-bottom: 30px;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+/* Form Styling */
+.signup-form {
+  width: 100%;
+}
+
+.form-row {
+  display: flex;
+  gap: 15px;
+}
+
+.form-row .form-group {
+  flex: 1;
+}
+
+.form-group {
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.form-group label {
+  font-size: 14px;
+  color: #374151;
+  margin-bottom: 8px;
+  display: block;
+  font-weight: 500;
+}
+
+.form-group input[type="text"],
+.form-group input[type="email"],
+.form-group input[type="password"],
+.form-group input[type="tel"],
+.form-group input[type="file"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.form-group input[type="text"]:focus,
+.form-group input[type="email"]:focus,
+.form-group input[type="password"]:focus,
+.form-group input[type="tel"]:focus {
+  outline: none;
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.form-group input:read-only,
+.readonly-input {
+  background-color: #f3f4f6;
+  color: #6b7280;
+}
+
+/* Gender & Ownership Options */
+.gender-options {
+  display: flex;
+  gap: 20px;
+  justify-content: flex-start;
+}
+
+.radio-label {
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.radio-label input[type="radio"] {
+  cursor: pointer;
+}
+
+/* Location Wrapper */
+.location-wrapper {
+  display: flex;
+  gap: 10px;
+}
+
+.location-wrapper input {
+  flex: 1;
+}
+
+.map-btn {
+  padding: 10px 16px;
+  background-color: #0ea5e9;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 500;
+  transition: background-color 0.3s ease;
+}
+
+.map-btn:hover {
+  background-color: #0284c7;
+}
+
+.map-btn:active {
+  background-color: #0369a1;
+}
+
+/* Image Preview */
+.image-preview {
+  margin-top: 10px;
+  text-align: center;
+}
+
+.image-preview img {
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 2px solid #e5e7eb;
+}
+
+/* Submit Button */
+button[type="submit"] {
+  width: 100%;
+  padding: 12px 20px;
+  background-color: #0ea5e9;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 20px;
+  transition: background-color 0.3s ease;
+}
+
+button[type="submit"]:hover {
+  background-color: #0284c7;
+}
+
+button[type="submit"]:active {
+  background-color: #0369a1;
+}
+
+/* Sign Up Link */
+.signup-link {
+  font-size: 14px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.signup-link span {
+  color: #10b981;
+  cursor: pointer;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.signup-link span:hover {
+  color: #059669;
+}
