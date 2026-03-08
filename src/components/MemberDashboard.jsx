@@ -11,6 +11,8 @@ import ElectionVoting from './ElectionVoting';
 import ElectionResults from './ElectionResults';
 import PastElectionResults from './PastElectionResults';
 import FileComplaint from './FileComplaint'; // NEW: Added Import
+import PresidentDashboard from './PresidentDashboard'; // NEW: Added Import
+import ActiveCommittees from './ActiveCommittees'; // NEW: Added Import
 import { updateUser } from '../api';
 import logo from '../assets/logo.png';
  
@@ -20,8 +22,8 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const [showNotifications, setShowNotifications] = useState(false); // FIX: Added State
   const [showElectionsMenu, setShowElectionsMenu] = useState(false);
   const [selectedElectionOption, setSelectedElectionOption] = useState(null);
-  // previously used for modal, now handled on separate page
-  const [showCommittee, setShowCommittee] = useState(false);
+  const [showCommittee, setShowCommittee] = useState(false); // Show Committee (only for President)
+  const [showReports, setShowReports] = useState(false); // Show Reports (only for President)
   const [showComplaintForm, setShowComplaintForm] = useState(false); // NEW: Added State for Complaint Form
 
   // Check if user has multiple NHCs
@@ -29,6 +31,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
 
   // Check if user has a positional role (is a committee member)
   const isOfficer = ['President', 'Treasurer', 'Vice President'].includes(currentUser.role);
+  const isPresident = currentUser.role === 'President';
 
   const handleSaveProfile = async (updatedData) => {
     try {
@@ -205,6 +208,11 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
           {/* FIX: Added onClick handler to show Elections menu */}
           <button className="menu-btn" onClick={() => setShowElectionsMenu(true)}>Elections</button>
           
+          {/* NEW: Reports button - Show President Dashboard (only for President) */}
+          {isPresident && (
+            <button className="menu-btn" onClick={() => setShowReports(true)}>📊 Reports</button>
+          )}
+          
           {/* NEW: Committee button (only for officers) */}
           {isOfficer && (
             <button className="menu-btn" onClick={() => setShowCommittee(true)}>
@@ -233,139 +241,14 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
         />
       )}
 
-      {/* NEW: Committee Panel */}
-      {showCommittee && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          zIndex: 2000,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '20px'
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '40px',
-            borderRadius: '12px',
-            width: '90%',
-            maxWidth: '600px',
-            maxHeight: '80vh',
-            overflowY: 'auto',
-            boxShadow: '0 10px 40px rgba(0,0,0,0.2)'
-          }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '30px'
-            }}>
-              <h2 style={{ margin: 0, fontSize: '24px', color: '#1f2937' }}>
-                Committee Panel
-              </h2>
-              <button
-                onClick={() => setShowCommittee(false)}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '24px',
-                  cursor: 'pointer',
-                  color: '#6b7280'
-                }}
-              >
-                ✕
-              </button>
-            </div>
+      {/* NEW: Show Active Committees (only for President) */}
+      {showCommittee && isPresident && (
+        <ActiveCommittees user={currentUser} onClose={() => setShowCommittee(false)} />
+      )}
 
-            <div style={{
-              backgroundColor: '#f0f9ff',
-              border: '2px solid #0ea5e9',
-              borderRadius: '8px',
-              padding: '20px',
-              marginBottom: '20px'
-            }}>
-              <p style={{ margin: '0 0 10px 0', fontSize: '16px', fontWeight: 'bold', color: '#0369a1' }}>
-                🎖️ Officer Information
-              </p>
-              <p style={{ margin: '6px 0', fontSize: '14px', color: '#0c4a6e' }}>
-                <span style={{ fontWeight: 'bold' }}>Name:</span> {currentUser.firstName} {currentUser.lastName}
-              </p>
-              <p style={{ margin: '6px 0', fontSize: '14px', color: '#0c4a6e' }}>
-                <span style={{ fontWeight: 'bold' }}>Position:</span> {currentUser.role}
-              </p>
-              <p style={{ margin: '6px 0', fontSize: '14px', color: '#0c4a6e' }}>
-                <span style={{ fontWeight: 'bold' }}>NHC:</span> {currentUser.nhcCode}
-              </p>
-              <p style={{ margin: '6px 0', fontSize: '14px', color: '#0c4a6e' }}>
-                <span style={{ fontWeight: 'bold' }}>Contact:</span> {currentUser.email || 'N/A'}
-              </p>
-            </div>
-
-            <div style={{
-              backgroundColor: '#f3f4f6',
-              border: '1px solid #d1d5db',
-              borderRadius: '8px',
-              padding: '20px',
-              marginBottom: '20px'
-            }}>
-              <p style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 'bold', color: '#374151' }}>
-                📋 Responsibilities
-              </p>
-              {currentUser.role === 'President' && (
-                <ul style={{ margin: 0, paddingLeft: '20px', color: '#6b7280', fontSize: '13px' }}>
-                  <li>Lead the council and chair all meetings</li>
-                  <li>Represent the NHC in official capacity</li>
-                  <li>Oversee election and nomination processes</li>
-                  <li>Make final decisions on disputes</li>
-                </ul>
-              )}
-              {currentUser.role === 'Treasurer' && (
-                <ul style={{ margin: 0, paddingLeft: '20px', color: '#6b7280', fontSize: '13px' }}>
-                  <li>Manage council finances and budget</li>
-                  <li>Prepare financial reports</li>
-                  <li>Maintain records of all transactions</li>
-                  <li>Present financial statements to members</li>
-                </ul>
-              )}
-              {currentUser.role === 'Vice President' && (
-                <ul style={{ margin: 0, paddingLeft: '20px', color: '#6b7280', fontSize: '13px' }}>
-                  <li>Assist the President in council duties</li>
-                  <li>Chair meetings in President's absence</li>
-                  <li>Coordinate community activities</li>
-                  <li>Communicate with members</li>
-                </ul>
-              )}
-            </div>
-
-            <button
-              onClick={() => setShowCommittee(false)}
-              style={{
-                width: '100%',
-                padding: '12px 20px',
-                backgroundColor: '#3b82f6',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                fontSize: '14px',
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                transition: 'all 0.3s ease'
-              }}
-              onMouseEnter={(e) => {
-                e.target.style.backgroundColor = '#2563eb';
-              }}
-              onMouseLeave={(e) => {
-                e.target.style.backgroundColor = '#3b82f6';
-              }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
+      {/* NEW: Show President Dashboard / Reports (only for President) */}
+      {showReports && (
+        <PresidentDashboard user={currentUser} onClose={() => setShowReports(false)} />
       )}
 
       {/* FIX: Added Elections Menu Modal */}

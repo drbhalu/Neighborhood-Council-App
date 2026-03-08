@@ -1509,6 +1509,23 @@ app.get('/api/complaints/:userCnic', async (req, res) => {
   }
 });
 
+// GET: Complaints by NHC Code (for president/chairman dashboard)
+app.get('/api/complaints-by-nhc/:nhcCode', async (req, res) => {
+  let pool;
+  try {
+    const { nhcCode } = req.params;
+    pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('NHC_Code', sql.NVarChar, nhcCode)
+      .query('SELECT * FROM Complaints WHERE NHC_Code = @NHC_Code ORDER BY CreatedDate DESC');
+    res.json(result.recordset);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
 const PORT = 3001;
 
 // start everything in async wrapper so we can await DB initialization

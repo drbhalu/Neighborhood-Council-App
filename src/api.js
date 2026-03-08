@@ -454,3 +454,12 @@ export const submitComplaint = async (formData) => {
   }
   return response.json();
 };
+
+export const getComplaintsByNHC = async (nhcCode) => {
+  const response = await fetch(`${API_URL}/complaints-by-nhc/${nhcCode}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch complaints');
+  }
+  return response.json();
+};
