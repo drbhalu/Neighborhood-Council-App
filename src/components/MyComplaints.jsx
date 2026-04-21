@@ -52,7 +52,8 @@ const MyComplaints = ({ user, onClose }) => {
     const loadComplaints = async () => {
       try {
         setLoading(true);
-        const data = await getComplaintsByUser(user.cnic);
+        // Filter by current NHC to avoid seeing complaints from other NHCs
+        const data = await getComplaintsByUser(user.cnic, user.nhcCode);
         setComplaints(data || []);
       } catch (err) {
         console.error('Error loading user complaints:', err);
@@ -359,16 +360,20 @@ const MyComplaints = ({ user, onClose }) => {
               </div>
             )}
 
-            <h4 style={{ margin: '20px 0 10px 0', fontSize: '22px', color: '#111827' }}>Remarks</h4>
-            <div style={{
-              backgroundColor: '#f3f4f6',
-              borderRadius: '8px',
-              padding: '14px',
-              color: '#1f2937',
-              lineHeight: '1.5'
-            }}>
-              {selectedComplaint.CommitteeRemarks || 'No remarks yet'}
-            </div>
+            {String(user?.role || '').toLowerCase() === 'president' && (
+              <>
+                <h4 style={{ margin: '20px 0 10px 0', fontSize: '22px', color: '#111827' }}>Remarks</h4>
+                <div style={{
+                  backgroundColor: '#f3f4f6',
+                  borderRadius: '8px',
+                  padding: '14px',
+                  color: '#1f2937',
+                  lineHeight: '1.5'
+                }}>
+                  {selectedComplaint.CommitteeRemarks || 'No remarks yet'}
+                </div>
+              </>
+            )}
           </div>
         )}
 

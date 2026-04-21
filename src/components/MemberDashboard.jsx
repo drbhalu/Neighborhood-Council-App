@@ -17,7 +17,7 @@ import ActiveCommittees from './ActiveCommittees'; // NEW: Added Import
 import CreateCommitteeScreen from './CreateCommitteeScreen';
 import CommitteeMeetingScreen from './CommitteeMeetingScreen';
 import SuggestionsForm from './SuggestionsForm'; // NEW: Added Import
-import { updateUser, getComplaintsByNHC, getPanels } from '../api';
+import { updateUser, getComplaintsByNHC, getPanels, getUserRoleInNHC } from '../api';
 import logo from '../assets/logo.png';
  
 const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }) => {
@@ -27,7 +27,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const [showElectionsMenu, setShowElectionsMenu] = useState(false);
   const [selectedElectionOption, setSelectedElectionOption] = useState(null);
   const [showCommittee, setShowCommittee] = useState(false); // Show Committee (only for President)
-  const [committeeView, setCommitteeView] = useState(null); // 'menu', 'list', 'money'
+  const [committeeView, setCommitteeView] = useState(null); // 'list', 'names', 'complaints', 'detail', 'money'
   const [showReports, setShowReports] = useState(false); // Show Reports (only for President)
   const [showComplaintForm, setShowComplaintForm] = useState(false); // NEW: Added State for Complaint Form
   const [showMyComplaints, setShowMyComplaints] = useState(false);
@@ -36,6 +36,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const [complaintStatsLoading, setComplaintStatsLoading] = useState(false);
   const [memberCommittees, setMemberCommittees] = useState([]);
   const [selectedCommittee, setSelectedCommittee] = useState(null);
+  const [selectedCommitteeName, setSelectedCommitteeName] = useState('');
 
   // Check if user has multiple NHCs
   const hasMultipleNHCs = user && user.nhcOptions && user.nhcOptions.length > 1;
@@ -43,11 +44,64 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const isOfficer = ['President', 'Treasurer', 'Vice President'].includes(currentUser.role);
   const isPresident = currentUser.role === 'President';
   const hasCommitteeMembership = memberCommittees.length > 0;
+  const committeeBackView = isPresident ? 'list' : 'complaints';
+
+  const committeeGroups = Object.values(
+    memberCommittees.reduce((acc, committee) => {
+      const committeeName = committee.PanelName || `Committee #${committee.Id}`;
+      if (!acc[committeeName]) {
+        acc[committeeName] = {
+          name: committeeName,
+          complaints: [],
+        };
+      }
+
+      if (committee.ComplaintId) {
+        const alreadyAdded = acc[committeeName].complaints.some(
+          (item) => String(item.ComplaintId) === String(committee.ComplaintId)
+        );
+        if (!alreadyAdded) {
+          acc[committeeName].complaints.push(committee);
+        }
+      }
+
+      return acc;
+    }, {})
+  );
+
+  const selectedCommitteeComplaints = memberCommittees.filter((committee) => {
+    const committeeName = committee.PanelName || `Committee #${committee.Id}`;
+    return committeeName === selectedCommitteeName && committee.ComplaintId;
+  });
+
+  // Verify NHC-specific role whenever NHC code changes
+  useEffect(() => {
+    const verifyRoleForNHC = async () => {
+      if (!currentUser.nhcCode) return;
+      
+      try {
+        const roleResponse = await getUserRoleInNHC(currentUser.cnic, currentUser.nhcCode);
+        const verifiedRole = roleResponse.role;
+        
+        // Update currentUser with verified role
+        setCurrentUser(prev => ({ ...prev, role: verifiedRole }));
+      } catch (err) {
+        console.error('Error verifying NHC role:', err);
+        // Fall back to existing role if verification fails
+      }
+    };
+    
+    verifyRoleForNHC();
+  }, [currentUser.nhcCode]); // Re-verify whenever nhcCode changes
 
   useEffect(() => {
     const fetchMyCommittees = async () => {
       try {
-        const data = await getPanels({ cnic: currentUser.cnic });
+        const data = await getPanels({ 
+          cnic: currentUser.cnic, 
+          committeeOnly: true,
+          nhcId: currentUser.nhcId // Filter by current NHC
+        });
         setMemberCommittees(data || []);
       } catch (err) {
         console.error('Error fetching user committees:', err);
@@ -58,7 +112,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
     if (currentUser?.cnic) {
       fetchMyCommittees();
     }
-  }, [currentUser.cnic]);
+  }, [currentUser.cnic, currentUser.nhcId]);
 
   useEffect(() => {
     if (isPresident && currentUser.nhcCode) {
@@ -218,6 +272,18 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
             {currentUser.nhcCode || "No Council Assigned"}
         </div>
 
+        <div style={{
+          margin: '0 0 20px 0',
+          fontSize: '16px',
+          color: '#475569',
+          backgroundColor: '#f8fafc',
+          padding: '8px 16px',
+          borderRadius: '6px',
+          textAlign: 'center'
+        }}>
+          CNIC: {currentUser.cnic || 'N/A'}
+        </div>
+
         {/* 3.5 ADD NEW NHC BUTTON */}
         <button 
           onClick={handleRequestNHC}
@@ -370,8 +436,10 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
           {/* Committee button (officers) */}
           {(isOfficer || hasCommitteeMembership) && (
             <button className="menu-btn" onClick={() => {
+              setSelectedCommittee(null);
+              setSelectedCommitteeName('');
               setShowCommittee(true);
-              setCommitteeView('list');
+              setCommitteeView(isPresident ? 'list' : 'names');
             }}>
               Committee ({currentUser.role})
             </button>
@@ -495,6 +563,296 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
         </div>
       )}
 
+      {showCommittee && committeeView === 'names' && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 999,
+            padding: '20px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowCommittee(false);
+              setCommitteeView(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+              width: '100%',
+              maxWidth: '760px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: '22px 24px 10px 24px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <button
+                onClick={() => {
+                  setShowCommittee(false);
+                  setCommitteeView(null);
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '28px',
+                  cursor: 'pointer',
+                  color: '#6b7280',
+                }}
+                title="Close"
+              >
+                ✕
+              </button>
+              <h2 style={{ margin: 0, color: '#1f2937', fontSize: '26px' }}>My Committees</h2>
+              <div style={{ width: '24px' }}></div>
+            </div>
+
+            <p style={{ margin: '0 24px 12px 24px', color: '#64748b' }}>
+              Select a committee to view all complaints assigned to it.
+            </p>
+
+            <div style={{ padding: '0 24px 24px 24px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {committeeGroups.length === 0 ? (
+                <div
+                  style={{
+                    padding: '20px',
+                    borderRadius: '8px',
+                    backgroundColor: '#f8fafc',
+                    color: '#475569',
+                    textAlign: 'center',
+                  }}
+                >
+                  No committees found for your account.
+                </div>
+              ) : (
+                committeeGroups.map((group) => (
+                  <div
+                    key={`committee-group-${group.name}`}
+                    style={{
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '10px',
+                      padding: '12px 14px 14px 14px',
+                      backgroundColor: '#ffffff',
+                    }}
+                  >
+                    <div style={{ fontSize: '16px', fontWeight: '700', color: '#0f172a', marginBottom: '10px' }}>
+                      {group.name}
+                    </div>
+
+                    <div style={{ fontSize: '13px', color: '#475569', marginBottom: '10px' }}>
+                      Assigned complaints: {group.complaints.length}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => {
+                          setSelectedCommitteeName(group.name);
+                          setCommitteeView('complaints');
+                        }}
+                        style={{
+                          padding: '8px 10px',
+                          border: 'none',
+                          borderRadius: '8px',
+                          backgroundColor: '#0ea5e9',
+                          color: 'white',
+                          fontSize: '13px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Open Committee
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCommittee && committeeView === 'complaints' && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 999,
+            padding: '20px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowCommittee(false);
+              setCommitteeView(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+              width: '100%',
+              maxWidth: '760px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: '22px 24px 10px 24px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <button
+                onClick={() => setCommitteeView('names')}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '28px',
+                  cursor: 'pointer',
+                  color: '#6b7280',
+                }}
+                title="Back"
+              >
+                ←
+              </button>
+              <h2 style={{ margin: 0, color: '#1f2937', fontSize: '26px' }}>{selectedCommitteeName || 'Committee'} Complaints</h2>
+              <div style={{ width: '24px' }}></div>
+            </div>
+
+            <p style={{ margin: '0 24px 12px 24px', color: '#64748b' }}>
+              Select a complaint assigned to this committee.
+            </p>
+
+            <div style={{ padding: '0 24px 24px 24px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {selectedCommitteeComplaints.length === 0 ? (
+                <div
+                  style={{
+                    padding: '20px',
+                    borderRadius: '8px',
+                    backgroundColor: '#f8fafc',
+                    color: '#475569',
+                    textAlign: 'center',
+                  }}
+                >
+                  No complaints assigned to this committee.
+                </div>
+              ) : (
+                selectedCommitteeComplaints.map((committee) => (
+                  <div
+                    key={`committee-complaint-${committee.Id}-${committee.ComplaintId}`}
+                    style={{
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '10px',
+                      padding: '12px 14px 14px 14px',
+                      backgroundColor: '#ffffff',
+                    }}
+                  >
+                    <div style={{ fontSize: '16px', fontWeight: '700', color: '#0f172a', marginBottom: '6px' }}>
+                      {committee.ComplaintCategory || 'Complaint'}
+                    </div>
+
+                    <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '10px' }}>
+                      Complaint ID: {committee.ComplaintId}
+                    </div>
+
+                    <p style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#334155', lineHeight: 1.5 }}>
+                      {committee.ComplaintDescription || 'No complaint details available.'}
+                    </p>
+
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => {
+                          setSelectedCommittee(committee);
+                          setCommitteeView('detail');
+                        }}
+                        style={{
+                          padding: '8px 10px',
+                          border: 'none',
+                          borderRadius: '8px',
+                          backgroundColor: '#0ea5e9',
+                          color: 'white',
+                          fontSize: '13px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Call Meeting
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setSelectedCommittee(committee);
+                          setCommitteeView('money');
+                        }}
+                        style={{
+                          padding: '8px 10px',
+                          border: 'none',
+                          borderRadius: '8px',
+                          backgroundColor: '#16a34a',
+                          color: 'white',
+                          fontSize: '13px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Request Budget
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          alert('Upload resolution photos feature will be available here soon.');
+                        }}
+                        style={{
+                          padding: '8px 10px',
+                          border: 'none',
+                          borderRadius: '8px',
+                          backgroundColor: '#7c3aed',
+                          color: 'white',
+                          fontSize: '13px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Upload Resolution Photos
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {isPresident && showCommittee && committeeView === 'create' && (
         <div
           style={{
@@ -512,7 +870,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
           }}
           onClick={(e) => {
             if (e.target === e.currentTarget) {
-              setCommitteeView('list');
+              setCommitteeView(committeeBackView);
             }
           }}
         >
@@ -565,7 +923,11 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
                 onBack={() => setCommitteeView('list')}
                 onCreated={async () => {
                   try {
-                    const data = await getPanels({ cnic: currentUser.cnic });
+                    const data = await getPanels({ 
+                      cnic: currentUser.cnic, 
+                      committeeOnly: true,
+                      nhcId: currentUser.nhcId // Filter by current NHC
+                    });
                     setMemberCommittees(data || []);
                   } catch (_) {}
                   setCommitteeView('list');
@@ -611,14 +973,15 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
           >
             <CommitteeMeetingScreen
               committee={selectedCommittee}
-              onBack={() => setCommitteeView('list')}
-              onSaved={() => setCommitteeView('list')}
+              user={currentUser}
+              onBack={() => setCommitteeView(committeeBackView)}
+              onSaved={() => setCommitteeView(committeeBackView)}
             />
           </div>
         </div>
       )}
 
-      {isPresident && showCommittee && committeeView === 'money' && (
+      {showCommittee && committeeView === 'money' && (
         <div
           style={{
             position: 'fixed',
@@ -635,7 +998,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
           }}
           onClick={(e) => {
             if (e.target === e.currentTarget) {
-              setCommitteeView('menu');
+              setCommitteeView(committeeBackView);
             }
           }}
         >
@@ -662,7 +1025,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
               }}
             >
               <button
-                onClick={() => setCommitteeView('menu')}
+                onClick={() => setCommitteeView(committeeBackView)}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -679,7 +1042,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
             </div>
 
             <p style={{ margin: '0 24px 12px 24px', color: '#64748b' }}>
-              Raise money options for committee activities.
+              Raise money options for committee activities{selectedCommittee?.PanelName ? ` - ${selectedCommittee.PanelName}` : ''}.
             </p>
 
             <div

@@ -10,13 +10,13 @@ const ActiveCommittees = ({ user, onCreateNewCommittee, onOpenCommittee }) => {
     if (user && user.cnic) {
       fetchPanels();
     }
-  }, [user.cnic]);
+  }, [user.cnic, user.nhcId]);
 
   const fetchPanels = async () => {
     try {
       setLoading(true);
-      // Show committees where current user is a president/member.
-      const filters = { cnic: user.cnic };
+      // Show committees where current user is a president/member in the current NHC.
+      const filters = { cnic: user.cnic, committeeOnly: true, nhcId: user.nhcId };
       const data = await getPanels(filters);
       setPanels(data || []);
     } catch (error) {
@@ -85,7 +85,7 @@ const ActiveCommittees = ({ user, onCreateNewCommittee, onOpenCommittee }) => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
                 <div>
                   <h3 style={{ margin: '0 0 5px 0', color: '#0f172a', fontSize: '18px' }}>
-                    {panel.PanelName || 'Committee'}
+                    {panel.ComplaintCategory || panel.PanelName || 'Committee'}
                   </h3>
                   <p style={{ margin: 0, color: '#64748b', fontSize: '13px' }}>
                     {Number(panel.MemberCount || 0)} members | {getFormedDaysText(panel.CreatedDate)}

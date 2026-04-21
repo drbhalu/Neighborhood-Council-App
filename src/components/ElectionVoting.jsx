@@ -21,11 +21,9 @@ const ElectionVoting = ({ user, onBack }) => {
         setLoading(true);
         setError(null);
 
-        // Fetch all elections and find the one for this user's NHC
-        const electionsData = await getElections();
-        const userElection = electionsData.find(
-          e => e.NHCName && e.NHCName.toLowerCase() === (user.nhcCode || '').toLowerCase()
-        );
+        // Fetch elections for this specific NHC only
+        const electionsData = await getElections(user.nhcId);
+        const userElection = (electionsData || [])[0]; // Backend now filters by nhcId
 
         if (!userElection) {
           setError('No active election for your NHC');

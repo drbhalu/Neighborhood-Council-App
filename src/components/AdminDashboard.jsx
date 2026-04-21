@@ -6,7 +6,7 @@ import SendNotification from './SendNotification'; // Import
 import logo from '../assets/logo.png';
 import AllUsers from './AllUsers';
 
-const AdminDashboard = ({ user, onLogout, onCreateNHC, onNotify, onViewRequests, onViewAllUsers, onViewElections }) => {
+const AdminDashboard = ({ user, onLogout, onCreateNHC, onNotify, onViewRequests, onViewAllUsers, onViewElections, onViewComplaints }) => {
   const [totalNHC, setTotalNHC] = useState(0);
   const [pendingRequests, setPendingRequests] = useState(0);
 
@@ -55,6 +55,7 @@ const AdminDashboard = ({ user, onLogout, onCreateNHC, onNotify, onViewRequests,
   {/* ADD CLICK HANDLER */}
   <button className="menu-btn" onClick={onNotify}>MEMBER NOTIFY</button>
   <button className="menu-btn" onClick={onViewElections}>ELECTIONS</button>
+  <button className="menu-btn" onClick={onViewComplaints}>COMPLAINTS</button>
   <button className="menu-btn" onClick={onViewAllUsers}>ALL USERS</button>
   <button className="menu-btn" onClick={onViewRequests}>REQUEST</button>
    <button onClick={onLogout} className="logout-btn">Logout</button>

@@ -1,32 +1,35 @@
 import React, { useEffect, useState } from 'react';
-import { createPanel, getNHCMembersByCode, getComplaintsByNHC, getPanels } from '../api';
+import { createPanel, getCommitteeSettings, getNHCMembersByCode, getComplaintsByNHC, getPanels } from '../api';
 
-const CreateCommitteeScreen = ({ user, onBack, onCreated }) => {
+const CreateCommitteeScreen = ({ user, onBack, onCreated, initialComplaintId = null }) => {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [committeeMemberCount, setCommitteeMemberCount] = useState(3);
   const [availableMembers, setAvailableMembers] = useState([]);
   const [complaints, setComplaints] = useState([]);
   const [existingPanels, setExistingPanels] = useState([]);
   const [formData, setFormData] = useState({
     committeeName: '',
     complaintId: '',
+    committeeHead: '',
     member1: '',
     member2: '',
     member3: '',
-    member4: '',
-    member5: '',
   });
 
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
-        const [membersData, complaintsData, panelsData] = await Promise.all([
+        const [membersData, complaintsData, panelsData, settingsData] = await Promise.all([
           getNHCMembersByCode(user.nhcCode),
           getComplaintsByNHC(user.nhcCode),
           getPanels(user.nhcId ? { nhcId: user.nhcId } : { cnic: user.cnic }),
+          getCommitteeSettings(),
         ]);
 
+        const configuredCount = Number(settingsData?.committeeMemberCount) || 3;
+        setCommitteeMemberCount(Math.max(1, configuredCount));
         setAvailableMembers((membersData || []).filter((m) => String(m.CNIC) !== String(user.cnic)));
         setComplaints(complaintsData || []);
         setExistingPanels(panelsData || []);
@@ -40,7 +43,37 @@ const CreateCommitteeScreen = ({ user, onBack, onCreated }) => {
     loadData();
   }, [user.cnic, user.nhcCode, user.nhcId]);
 
-  const selectedMembers = [formData.member1, formData.member2, formData.member3, formData.member4, formData.member5];
+  useEffect(() => {
+    if (initialComplaintId) {
+      setFormData((prev) => ({ ...prev, complaintId: String(initialComplaintId) }));
+    }
+  }, [initialComplaintId]);
+
+  const memberFieldNames = Array.from({ length: committeeMemberCount }, (_, index) => `member${index + 1}`);
+  const selectedMembers = memberFieldNames.map((fieldName) => formData[fieldName]);
+
+  useEffect(() => {
+    setFormData((prev) => {
+      const next = { ...prev };
+      memberFieldNames.forEach((fieldName) => {
+        if (typeof next[fieldName] === 'undefined') {
+          next[fieldName] = '';
+        }
+      });
+      Object.keys(next).forEach((key) => {
+        if (/^member\d+$/.test(key) && !memberFieldNames.includes(key)) {
+          delete next[key];
+        }
+      });
+      return next;
+    });
+  }, [committeeMemberCount]);
+
+  useEffect(() => {
+    if (formData.committeeHead && !selectedMembers.includes(formData.committeeHead)) {
+      setFormData((prev) => ({ ...prev, committeeHead: '' }));
+    }
+  }, [formData.committeeHead, selectedMembers.join('|')]);
 
   const getAvailableOptionsForField = (fieldName) => {
     const selected = new Set(selectedMembers.filter((cnic) => cnic && cnic !== formData[fieldName]));
@@ -64,6 +97,12 @@ const CreateCommitteeScreen = ({ user, onBack, onCreated }) => {
       const status = String(c.Status || '').toLowerCase().replace(/\s+/g, '-');
       const isPending = status === 'pending' || status === 'open';
       const isUnassigned = !assignedComplaintIds.has(Number(c.Id));
+      const isRequested = initialComplaintId && Number(c.Id) === Number(initialComplaintId);
+      const isResolved = status === 'resolved';
+
+      if (isRequested) {
+        return isUnassigned && !isResolved;
+      }
       return isPending && isUnassigned;
     });
   };
@@ -85,11 +124,15 @@ const CreateCommitteeScreen = ({ user, onBack, onCreated }) => {
       return;
     }
     if (selectedMembers.some((cnic) => !cnic)) {
-      alert('Please select all 5 committee members.');
+      alert(`Please select all ${committeeMemberCount} committee members.`);
       return;
     }
     if (uniqueMembers.size !== selectedMembers.length) {
       alert('Please select 5 different members.');
+      return;
+    }
+    if (!formData.committeeHead) {
+      alert('Please select a committee head from selected members.');
       return;
     }
     if (!formData.complaintId) {
@@ -103,7 +146,10 @@ const CreateCommitteeScreen = ({ user, onBack, onCreated }) => {
         panelName: formData.committeeName.trim(),
         presidentCnic: user.cnic,
         nhcId: user.nhcId,
-        members: selectedMembers.map((cnic, index) => ({ cnic, role: `Member ${index + 1}` })),
+        members: selectedMembers.map((cnic) => ({
+          cnic,
+          role: cnic === formData.committeeHead ? 'Head' : 'Member',
+        })),
         complaintId: Number(formData.complaintId),
         isCommittee: true,
       });
@@ -153,7 +199,7 @@ const CreateCommitteeScreen = ({ user, onBack, onCreated }) => {
             />
           </div>
 
-          {['member1', 'member2', 'member3', 'member4', 'member5'].map((fieldKey, index) => (
+          {memberFieldNames.map((fieldKey, index) => (
             <div style={{ marginBottom: '15px' }} key={fieldKey}>
               <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', fontSize: '14px', color: '#0f172a' }}>
                 Member {index + 1}
@@ -173,6 +219,30 @@ const CreateCommitteeScreen = ({ user, onBack, onCreated }) => {
               </select>
             </div>
           ))}
+
+          <div style={{ marginBottom: '15px' }}>
+            <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', fontSize: '14px', color: '#0f172a' }}>
+              Committee Head
+            </label>
+            <select
+              required
+              value={formData.committeeHead}
+              onChange={(e) => setFormData({ ...formData, committeeHead: e.target.value })}
+              style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '14px', boxSizing: 'border-box' }}
+            >
+              <option value="">Select committee head</option>
+              {selectedMembers
+                .filter(Boolean)
+                .map((cnic) => {
+                  const member = availableMembers.find((m) => String(m.CNIC) === String(cnic));
+                  return (
+                    <option key={`head-${cnic}`} value={cnic}>
+                      {member ? `${member.FirstName} ${member.LastName}` : cnic} ({cnic})
+                    </option>
+                  );
+                })}
+            </select>
+          </div>
 
           <div style={{ marginBottom: '20px' }}>
             <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', fontSize: '14px', color: '#0f172a' }}>

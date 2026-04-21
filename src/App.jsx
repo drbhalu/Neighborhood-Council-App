@@ -7,12 +7,13 @@ import Splash from './components/Splash';
 import SendNotification from './components/SendNotification';
 import RequestsList from './components/RequestsList';
 import Elections from './components/Elections';
-import { getNHCList, createNHC, sendNotification, sendRequest } from './api';
+import { getNHCList, createNHC, sendNotification, sendRequest, getUserRoleInNHC } from './api';
 import MemberDashboard from './components/MemberDashboard';
 import AllUsers from './components/AllUsers';
 import EditUser from './components/EditUser';
 import ChooseNHC from './components/ChooseNHC';
 import RequestNHC from './components/RequestNHC';
+import AdminComplaints from './components/AdminComplaints';
 
 
 function App() {
@@ -34,8 +35,9 @@ function App() {
   }, []);
 
   // FIX: Check Role FIRST
-  const handleLoginSuccess = (userData) => {
+  const handleLoginSuccess = async (userData) => {
     if (userData.role && userData.role.toLowerCase() === 'admin') {
+      setCurrentUser(userData);
       setCurrentView('admin');
     } else {
       // prepare nhc choices for members who belong to more than one council
@@ -55,7 +57,43 @@ function App() {
       // if user has multiple councils, prompt for selection first
       if (options.length > 1) {
         setCurrentView('choose-nhc');
+      } else if (options.length === 1) {
+        // Single NHC: fetch and verify NHC-specific role before showing dashboard
+        try {
+          const roleResponse = await getUserRoleInNHC(userData.cnic, options[0]);
+          const nhcSpecificRole = roleResponse.role;
+          
+          // Fetch nhcId for this NHC
+          let nhcId = null;
+          try {
+            const nhcListData = await getNHCList();
+            const nhcRecord = (nhcListData || []).find(n => n.Name === options[0] || n.Code === options[0]);
+            if (nhcRecord) {
+              nhcId = nhcRecord.Id;
+            }
+          } catch (nhcErr) {
+            console.error('Error fetching NHC ID:', nhcErr);
+          }
+          
+          setCurrentUser(prev => ({
+            ...prev,
+            nhcCode: options[0],
+            nhcId: nhcId,  // Set nhcId here
+            role: nhcSpecificRole  // Use NHC-specific role, NOT global role
+          }));
+          setCurrentView('member');
+        } catch (err) {
+          console.error('Error fetching NHC role on login:', err);
+          // Fallback: use the default NHC anyway
+          setCurrentUser(prev => ({
+            ...prev,
+            nhcCode: options[0],
+            nhcId: userData.nhcId  // Use the nhcId from login response if available
+          }));
+          setCurrentView('member');
+        }
       } else {
+        // No NHC assigned yet
         setCurrentView('member');
       }
     }
@@ -104,6 +142,10 @@ function App() {
     setCurrentView('elections');
   };
 
+  const handleViewComplaints = () => {
+    setCurrentView('admin-complaints');
+  };
+
   const handleEditUser = (user) => {
     setEditingUser(user);
     setCurrentView('edit-user');
@@ -135,6 +177,7 @@ function App() {
           onViewRequests={handleViewRequests}
           onViewAllUsers={handleViewAllUsers}
           onViewElections={handleViewElections}
+          onViewComplaints={handleViewComplaints}
         />
       )}
 
@@ -160,6 +203,10 @@ function App() {
         <Elections onBack={switchToAdmin} />
       )}
 
+      {currentView === 'admin-complaints' && currentUser && (
+        <AdminComplaints user={currentUser} onClose={switchToAdmin} />
+      )}
+
       {currentView === 'edit-user' && editingUser && (
         <EditUser user={editingUser} onBack={switchToAdmin} />
       )}
@@ -168,9 +215,36 @@ function App() {
       {currentView === 'choose-nhc' && currentUser && (
         <ChooseNHC
           user={currentUser}
-          onSelect={(code) => {
-            setCurrentUser({ ...currentUser, nhcCode: code });
-            setCurrentView('member');
+          onSelect={async (code) => {
+            try {
+              // Fetch NHC-specific role from database
+              const roleResponse = await getUserRoleInNHC(currentUser.cnic, code);
+              const nhcSpecificRole = roleResponse.role; // e.g., 'President' or 'Member'
+              
+              // Fetch nhcId for this NHC code
+              let nhcIdForCode = null;
+              try {
+                const nhcListData = await getNHCList();
+                const nhcRecord = (nhcListData || []).find(n => n.Name === code || n.Code === code);
+                if (nhcRecord) {
+                  nhcIdForCode = nhcRecord.Id;
+                }
+              } catch (nhcErr) {
+                console.error('Error fetching NHC list to get ID:', nhcErr);
+              }
+              
+              // Update user with new NHC code, nhcId AND new role
+              setCurrentUser({ 
+                ...currentUser, 
+                nhcCode: code,
+                nhcId: nhcIdForCode,  // Update nhcId for this NHC
+                role: nhcSpecificRole  // Update role for this NHC
+              });
+              setCurrentView('member');
+            } catch (err) {
+              console.error('Error fetching role for NHC:', err);
+              alert('Failed to load NHC role. Please try again.');
+            }
           }}
           onCancel={handleLogout}
         />

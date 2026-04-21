@@ -17,9 +17,9 @@ const NominationInfo = ({ user, onBack }) => {
           const data = await getCandidates(user.nhcId, user.cnic);
           setCandidates(data || []);
 
-          // Load nomination dates
-          const nominations = await getNominations();
-          const record = (nominations || []).find(n => Number(n.NHC_Id) === Number(user.nhcId) || Number(n.NHCId) === Number(user.nhcId));
+          // Load nomination dates for this specific NHC only
+          const nominations = await getNominations(user.nhcId);
+          const record = (nominations || [])[0]; // Backend now returns only this NHC's nominations
           
           if (record && record.NominationStartDate && record.NominationEndDate) {
             // Parse DATE from DB string "YYYY-MM-DD" safely as local date

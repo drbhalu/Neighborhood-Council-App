@@ -61,6 +61,15 @@ export const getAllUsers = async () => {
   return response.json();
 };
 
+export const getCommitteeSettings = async () => {
+  const response = await fetch(`${API_URL}/committee-settings`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch committee settings');
+  }
+  return response.json();
+};
+
 export const sendRequest = async (requestData) => {
   const response = await fetch(`${API_URL}/request`, {
     method: 'POST',
@@ -198,16 +207,24 @@ export const deleteElectionDate = async (nhcId) => {
   return data;
 };
 
-export const getNominations = async () => {
-  const response = await fetch(`${API_URL}/nominations`);
+export const getNominations = async (nhcId = null) => {
+  let url = `${API_URL}/nominations`;
+  if (nhcId) {
+    url += `?nhcId=${nhcId}`;
+  }
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error('Failed to fetch nominations');
   }
   return response.json();
 };
 
-export const getElections = async () => {
-  const response = await fetch(`${API_URL}/elections`);
+export const getElections = async (nhcId = null) => {
+  let url = `${API_URL}/elections`;
+  if (nhcId) {
+    url += `?nhcId=${nhcId}`;
+  }
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error('Failed to fetch elections');
   }
@@ -301,6 +318,7 @@ export const getPanels = async (filters = {}) => {
   const params = new URLSearchParams();
   if (filters.nhcId) params.append('nhcId', filters.nhcId);
   if (filters.cnic) params.append('cnic', filters.cnic);
+  if (filters.committeeOnly) params.append('committeeOnly', 'true');
   const response = await fetch(`${API_URL}/panels?${params.toString()}`);
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
@@ -314,6 +332,19 @@ export const getPanelMembers = async (panelId) => {
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to fetch panel members');
+  }
+  return response.json();
+};
+
+export const assignComplaintToPanel = async ({ panelId, complaintId, presidentCnic }) => {
+  const response = await fetch(`${API_URL}/panels/${panelId}/complaints`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ complaintId, presidentCnic })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to assign complaint to committee');
   }
   return response.json();
 };
@@ -467,8 +498,17 @@ export const submitComplaint = async (formData) => {
   return response.json();
 };
 
+export const getAllComplaints = async () => {
+  const response = await fetch(`${API_URL}/complaints`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch all complaints');
+  }
+  return response.json();
+};
+
 export const getComplaintsByNHC = async (nhcCode) => {
-  const response = await fetch(`${API_URL}/complaints-by-nhc/${nhcCode}`);
+  const response = await fetch(`${API_URL}/complaints-by-nhc/${encodeURIComponent(nhcCode)}`);
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to fetch complaints');
@@ -476,8 +516,21 @@ export const getComplaintsByNHC = async (nhcCode) => {
   return response.json();
 };
 
-export const getComplaintsByUser = async (userCnic) => {
-  const response = await fetch(`${API_URL}/complaints/${userCnic}`);
+export const getComplaintHistory = async (complaintId, actorCnic) => {
+  const response = await fetch(`${API_URL}/complaints/${complaintId}/history?actorCnic=${encodeURIComponent(actorCnic)}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch complaint history');
+  }
+  return response.json();
+};
+
+export const getComplaintsByUser = async (userCnic, nhcCode = null) => {
+  let url = `${API_URL}/complaints/${userCnic}`;
+  if (nhcCode) {
+    url += `?nhcCode=${encodeURIComponent(nhcCode)}`;
+  }
+  const response = await fetch(url);
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to fetch your complaints');
@@ -485,12 +538,16 @@ export const getComplaintsByUser = async (userCnic) => {
   return response.json();
 };
 
-export const saveCommitteeMeetingDecision = async ({ complaintId, remarks, status, decision, minutesFile }) => {
+export const saveCommitteeMeetingDecision = async ({ complaintId, remarks, status, decision, minutesFile, actorCnic, budgetAmount, budgetReason, moreWorkNeeded }) => {
   const formData = new FormData();
   if (remarks) formData.append('remarks', remarks);
   if (status) formData.append('status', status);
   if (decision) formData.append('decision', decision);
   if (minutesFile) formData.append('minutesPdf', minutesFile);
+  if (actorCnic) formData.append('actorCnic', actorCnic);
+  if (budgetAmount) formData.append('budgetAmount', budgetAmount);
+  if (budgetReason) formData.append('budgetReason', budgetReason);
+  if (moreWorkNeeded) formData.append('moreWorkNeeded', moreWorkNeeded);
 
   const response = await fetch(`${API_URL}/complaints/${complaintId}/committee-meeting`, {
     method: 'PUT',
@@ -545,6 +602,16 @@ export const updateSuggestionStatus = async (id, status, nhcCode) => {
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to update suggestion status');
+  }
+  return response.json();
+};
+
+// Get NHC-specific role for user
+export const getUserRoleInNHC = async (cnic, nhcCode) => {
+  const response = await fetch(`${API_URL}/user-role?cnic=${encodeURIComponent(cnic)}&nhcCode=${encodeURIComponent(nhcCode)}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch user role for this NHC');
   }
   return response.json();
 };

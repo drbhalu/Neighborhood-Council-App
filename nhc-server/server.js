@@ -171,6 +171,21 @@ async function initDB() {
       END
     `);
 
+    // Committee size configuration so the frontend can adapt dynamically.
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='CommitteeSettings' AND xtype='U')
+      CREATE TABLE CommitteeSettings (
+        SettingKey NVARCHAR(100) PRIMARY KEY,
+        SettingValue INT NOT NULL,
+        UpdatedDate DATETIME DEFAULT GETDATE()
+      )
+    `);
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT 1 FROM CommitteeSettings WHERE SettingKey = 'CommitteeMemberCount')
+      INSERT INTO CommitteeSettings (SettingKey, SettingValue) VALUES ('CommitteeMemberCount', 3)
+    `);
+    console.log('✓ Table CommitteeSettings ready.');
+
     // Add ProfileImage column if missing
     await nhcPool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'ProfileImage' AND Object_ID = OBJECT_ID('Users'))
@@ -279,8 +294,15 @@ async function initDB() {
         Id INT IDENTITY(1,1) PRIMARY KEY,
         UserCNIC NVARCHAR(20),
         NHC_Code NVARCHAR(100),
+        Role NVARCHAR(50) DEFAULT 'Member',
         CONSTRAINT UQ_UserNHC UNIQUE (UserCNIC, NHC_Code)
       )
+    `);
+    
+    // Add Role column if missing (for existing databases)
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Role' AND Object_ID = OBJECT_ID('UserNHCs'))
+      ALTER TABLE UserNHCs ADD Role NVARCHAR(50) DEFAULT 'Member';
     `);
     console.log("✓ Table UserNHCs ready.");
 
@@ -293,9 +315,10 @@ async function initDB() {
       `);
 
       if (nhcCodeColumnExists.recordset.length > 0) {
-        const users = await nhcPool.request().query("SELECT CNIC, NHC_Code FROM Users WHERE NHC_Code IS NOT NULL AND LTRIM(RTRIM(NHC_Code)) <> ''");
+        const users = await nhcPool.request().query("SELECT CNIC, NHC_Code, Role FROM Users WHERE NHC_Code IS NOT NULL AND LTRIM(RTRIM(NHC_Code)) <> ''");
         for (const u of users.recordset) {
           const cnicVal = u.CNIC;
+          const userRole = u.Role || 'Member';
           const codes = (u.NHC_Code || '')
             .split(',')
             .map(s => s.trim())
@@ -305,13 +328,14 @@ async function initDB() {
               await nhcPool.request()
                 .input('UserCNIC', sql.NVarChar, cnicVal)
                 .input('NHC_Code', sql.NVarChar, code)
-                .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code) VALUES (@UserCNIC, @NHC_Code)');
+                .input('Role', sql.NVarChar, userRole)
+                .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code, Role) VALUES (@UserCNIC, @NHC_Code, @Role)');
             } catch (e) {
               // ignore duplicate key errors
             }
           }
         }
-        console.log(`✓ Migrated ${users.recordset.length} users to UserNHCs`);
+        console.log(`✓ Migrated ${users.recordset.length} users to UserNHCs with roles`);
       } else {
         console.log('✓ Skipped Users.NHC_Code migration (column not found)');
       }
@@ -513,6 +537,7 @@ async function initDB() {
         NHC_Id INT NOT NULL,
         ComplaintId INT NULL,
         Description NVARCHAR(MAX) NULL,
+        IsCommittee BIT DEFAULT 0,
         Status NVARCHAR(20) DEFAULT 'pending',
         CreatedDate DATETIME DEFAULT GETDATE()
       )
@@ -540,6 +565,23 @@ async function initDB() {
       ALTER TABLE Panels ADD Description NVARCHAR(MAX) NULL;
     `);
     await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'IsCommittee' AND Object_ID = OBJECT_ID('Panels'))
+      ALTER TABLE Panels ADD IsCommittee BIT DEFAULT 0;
+    `);
+    await nhcPool.request().query(`
+      IF EXISTS (SELECT * FROM sysobjects WHERE name='PanelMembers' AND xtype='U')
+      BEGIN
+        UPDATE p
+        SET p.IsCommittee = 1
+        FROM Panels p
+        WHERE ISNULL(p.IsCommittee, 0) = 0
+          AND EXISTS (
+            SELECT 1 FROM PanelMembers pm
+            WHERE pm.PanelId = p.Id AND LOWER(ISNULL(pm.Role, '')) = 'head'
+          );
+      END
+    `);
+    await nhcPool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'Status' AND Object_ID = OBJECT_ID('Panels'))
       ALTER TABLE Panels ADD Status NVARCHAR(20) DEFAULT 'pending';
     `);
@@ -548,86 +590,7 @@ async function initDB() {
       ALTER TABLE Panels ADD CreatedDate DATETIME DEFAULT GETDATE();
     `);
 
-    // Create PanelMembers table for treasurer/vice invitations
-    await nhcPool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PanelMembers' AND xtype='U')
-      CREATE TABLE PanelMembers (
-        Id INT IDENTITY(1,1) PRIMARY KEY,
-        PanelId INT NOT NULL,
-        CNIC NVARCHAR(20) NOT NULL,
-        Role NVARCHAR(50) NOT NULL,
-        InviteStatus NVARCHAR(20) DEFAULT 'pending',
-        CreatedDate DATETIME DEFAULT GETDATE(),
-        FOREIGN KEY (PanelId) REFERENCES Panels(Id)
-      )
-    `);
-
-    console.log("✓ Table Panels and PanelMembers ready.");
-
-    // --- Update Candidates table to link to panels ---
-    await nhcPool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'PanelId' AND Object_ID = OBJECT_ID('Candidates'))
-      ALTER TABLE Candidates ADD PanelId INT NULL;
-    `);
-
-    // If a foreign key on PanelId doesn't exist yet, add one (only if Panels table exists)
-    await nhcPool.request().query(`
-      IF NOT EXISTS (
-        SELECT * FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID('Candidates') AND name = 'FK_Candidates_Panels'
-      )
-      ALTER TABLE Candidates ADD CONSTRAINT FK_Candidates_Panels FOREIGN KEY (PanelId) REFERENCES Panels(Id);
-    `);
-
-    // Create CandidateSupports Table (for tracking supports/votes)
-    await nhcPool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='CandidateSupports' AND xtype='U')
-      CREATE TABLE CandidateSupports (
-        Id INT IDENTITY(1,1) PRIMARY KEY,
-        CandidateId INT NOT NULL,
-        SupporterCNIC NVARCHAR(20) NOT NULL,
-        NHC_Id INT,
-        NominationEndDate DATE,
-        CreatedDate DATETIME DEFAULT GETDATE(),
-        FOREIGN KEY (CandidateId) REFERENCES Candidates(Id)
-      )
-    `);
-    
-    // Add NHC_Id column if missing
-    await nhcPool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'NHC_Id' AND Object_ID = OBJECT_ID('CandidateSupports'))
-      ALTER TABLE CandidateSupports ADD NHC_Id INT;
-    `);
-    
-    // Add NominationEndDate column if missing
-    await nhcPool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'NominationEndDate' AND Object_ID = OBJECT_ID('CandidateSupports'))
-      ALTER TABLE CandidateSupports ADD NominationEndDate DATE;
-    `);
-    
-    console.log("✓ Table CandidateSupports ready.");
-
-    // Create ElectionResults Table (stores finalized results when election ends)
-    await nhcPool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ElectionResults' AND xtype='U')
-      CREATE TABLE ElectionResults (
-        Id INT IDENTITY(1,1) PRIMARY KEY,
-        ElectionId INT NOT NULL,
-        NHC_Id INT NOT NULL,
-        CandidateId INT NOT NULL,
-        CNIC NVARCHAR(20),
-        FirstName NVARCHAR(50),
-        LastName NVARCHAR(50),
-        Category NVARCHAR(50),
-        TotalVotes INT DEFAULT 0,
-        CreatedDate DATETIME DEFAULT GETDATE(),
-        FOREIGN KEY (ElectionId) REFERENCES Elections(Id),
-        FOREIGN KEY (NHC_Id) REFERENCES NHC_Zones(Id),
-        FOREIGN KEY (CandidateId) REFERENCES Candidates(Id)
-      )
-    `);
-    console.log("✓ Table ElectionResults ready.");
-
-    // Create Complaints Table
+    // Create Complaints Table (must be before PanelComplaints which references it)
     await nhcPool.request().query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Complaints' AND xtype='U')
       CREATE TABLE Complaints (
@@ -696,6 +659,124 @@ async function initDB() {
       ALTER TABLE Complaints ADD UpdatedDate DATETIME DEFAULT GETDATE();
     `);
     console.log("✓ Table Complaints ready.");
+
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ComplaintActivityLog' AND xtype='U')
+      CREATE TABLE ComplaintActivityLog (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        ComplaintId INT NOT NULL,
+        ActorCNIC NVARCHAR(20) NULL,
+        ActorRole NVARCHAR(50) NULL,
+        ActionType NVARCHAR(50) NOT NULL,
+        RemarksSnapshot NVARCHAR(MAX) NULL,
+        DecisionSnapshot NVARCHAR(100) NULL,
+        MinutesPathSnapshot NVARCHAR(MAX) NULL,
+        ResolutionPhotosSnapshot NVARCHAR(MAX) NULL,
+        StatusSnapshot NVARCHAR(50) NULL,
+        CreatedDate DATETIME DEFAULT GETDATE(),
+        FOREIGN KEY (ComplaintId) REFERENCES Complaints(Id)
+      )
+    `);
+    console.log("✓ Table ComplaintActivityLog ready.");
+
+    // Create PanelMembers table for treasurer/vice invitations
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PanelMembers' AND xtype='U')
+      CREATE TABLE PanelMembers (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        PanelId INT NOT NULL,
+        CNIC NVARCHAR(20) NOT NULL,
+        Role NVARCHAR(50) NOT NULL,
+        InviteStatus NVARCHAR(20) DEFAULT 'pending',
+        CreatedDate DATETIME DEFAULT GETDATE(),
+        FOREIGN KEY (PanelId) REFERENCES Panels(Id)
+      )
+    `);
+
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PanelComplaints' AND xtype='U')
+      CREATE TABLE PanelComplaints (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        PanelId INT NOT NULL,
+        ComplaintId INT NOT NULL,
+        CreatedDate DATETIME DEFAULT GETDATE(),
+        CONSTRAINT UQ_PanelComplaints_Panel_Complaint UNIQUE (PanelId, ComplaintId),
+        FOREIGN KEY (PanelId) REFERENCES Panels(Id),
+        FOREIGN KEY (ComplaintId) REFERENCES Complaints(Id)
+      )
+    `);
+
+    await nhcPool.request().query(`
+      IF NOT EXISTS (
+        SELECT 1 FROM sys.indexes WHERE name = 'UQ_PanelComplaints_Panel_Complaint' AND object_id = OBJECT_ID('PanelComplaints')
+      )
+      ALTER TABLE PanelComplaints ADD CONSTRAINT UQ_PanelComplaints_Panel_Complaint UNIQUE (PanelId, ComplaintId);
+    `);
+
+    console.log("✓ Table Panels, PanelMembers and PanelComplaints ready.");
+
+    // --- Update Candidates table to link to panels ---
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'PanelId' AND Object_ID = OBJECT_ID('Candidates'))
+      ALTER TABLE Candidates ADD PanelId INT NULL;
+    `);
+
+    // If a foreign key on PanelId doesn't exist yet, add one (only if Panels table exists)
+    await nhcPool.request().query(`
+      IF NOT EXISTS (
+        SELECT * FROM sys.foreign_keys WHERE parent_object_id = OBJECT_ID('Candidates') AND name = 'FK_Candidates_Panels'
+      )
+      ALTER TABLE Candidates ADD CONSTRAINT FK_Candidates_Panels FOREIGN KEY (PanelId) REFERENCES Panels(Id);
+    `);
+
+    // Create CandidateSupports Table (for tracking supports/votes)
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='CandidateSupports' AND xtype='U')
+      CREATE TABLE CandidateSupports (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        CandidateId INT NOT NULL,
+        SupporterCNIC NVARCHAR(20) NOT NULL,
+        NHC_Id INT,
+        NominationEndDate DATE,
+        CreatedDate DATETIME DEFAULT GETDATE(),
+        FOREIGN KEY (CandidateId) REFERENCES Candidates(Id)
+      )
+    `);
+    
+    // Add NHC_Id column if missing
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'NHC_Id' AND Object_ID = OBJECT_ID('CandidateSupports'))
+      ALTER TABLE CandidateSupports ADD NHC_Id INT;
+    `);
+    
+    // Add NominationEndDate column if missing
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'NominationEndDate' AND Object_ID = OBJECT_ID('CandidateSupports'))
+      ALTER TABLE CandidateSupports ADD NominationEndDate DATE;
+    `);
+    
+    console.log("✓ Table CandidateSupports ready.");
+
+    // Create ElectionResults Table (stores finalized results when election ends)
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ElectionResults' AND xtype='U')
+      CREATE TABLE ElectionResults (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        ElectionId INT NOT NULL,
+        NHC_Id INT NOT NULL,
+        CandidateId INT NOT NULL,
+        CNIC NVARCHAR(20),
+        FirstName NVARCHAR(50),
+        LastName NVARCHAR(50),
+        Category NVARCHAR(50),
+        TotalVotes INT DEFAULT 0,
+        CreatedDate DATETIME DEFAULT GETDATE(),
+        FOREIGN KEY (ElectionId) REFERENCES Elections(Id),
+        FOREIGN KEY (NHC_Id) REFERENCES NHC_Zones(Id),
+        FOREIGN KEY (CandidateId) REFERENCES Candidates(Id)
+      )
+    `);
+    console.log("✓ Table ElectionResults ready.");
 
     // Create Table Suggestions
     await nhcPool.request().query(`
@@ -1042,10 +1123,17 @@ app.delete('/api/nhc/election/:nhcId', async (req, res) => {
       const posRes = await pool.request().query('SELECT Name FROM Positions');
       for (const p of posRes.recordset) {
         try {
+          // Reset in Users table
           await pool.request()
             .input('NHC_Code', sql.NVarChar, nhcName)
             .input('RoleName', sql.NVarChar, p.Name)
             .query("UPDATE Users SET Role = 'User' WHERE CNIC IN (SELECT UserCNIC FROM UserNHCs WHERE NHC_Code = @NHC_Code) AND Role = @RoleName");
+          
+          // Also reset in UserNHCs table for this specific NHC
+          await pool.request()
+            .input('NHC_Code', sql.NVarChar, nhcName)
+            .input('RoleName', sql.NVarChar, p.Name)
+            .query("UPDATE UserNHCs SET Role = 'Member' WHERE NHC_Code = @NHC_Code AND Role = @RoleName");
         } catch (e) {
           console.error('Failed to reset role for position', p.Name, e);
         }
@@ -1070,10 +1158,19 @@ app.delete('/api/nhc/election/:nhcId', async (req, res) => {
               `);
             for (const m of memRes.recordset) {
               try {
+                // Update Users table
                 await pool.request()
                   .input('CNIC', sql.NVarChar, m.CNIC)
                   .input('RoleName', sql.NVarChar, m.Role)
                   .query('UPDATE Users SET Role = @RoleName WHERE CNIC = @CNIC');
+                
+                // Also update UserNHCs table for this specific NHC
+                await pool.request()
+                  .input('CNIC', sql.NVarChar, m.CNIC)
+                  .input('NHC_Code', sql.NVarChar, nhcName)
+                  .input('RoleName', sql.NVarChar, m.Role)
+                  .query('UPDATE UserNHCs SET Role = @RoleName WHERE UserCNIC = @CNIC AND NHC_Code = @NHC_Code');
+                
                 console.log(`✓ Assigned panel member role ${m.Role} to user ${m.CNIC}`);
               } catch (innerErr) {
                 console.error('Failed to update role for panel member', m.CNIC, innerErr);
@@ -1085,10 +1182,19 @@ app.delete('/api/nhc/election/:nhcId', async (req, res) => {
         } else {
           // Individual candidate (not panel-based)
           try {
+            // Update Users table
             await pool.request()
               .input('CNIC', sql.NVarChar, candidate.CNIC)
               .input('RoleName', sql.NVarChar, candidate.Category)
               .query('UPDATE Users SET Role = @RoleName WHERE CNIC = @CNIC');
+            
+            // Also update UserNHCs table for this specific NHC
+            await pool.request()
+              .input('CNIC', sql.NVarChar, candidate.CNIC)
+              .input('NHC_Code', sql.NVarChar, nhcName)
+              .input('RoleName', sql.NVarChar, candidate.Category)
+              .query('UPDATE UserNHCs SET Role = @RoleName WHERE UserCNIC = @CNIC AND NHC_Code = @NHC_Code');
+            
             console.log(`✓ Assigned role ${candidate.Category} to user ${candidate.CNIC}`);
           } catch (e) {
             console.error('Failed to assign role to winner', candidate.CNIC, e);
@@ -1119,13 +1225,15 @@ app.delete('/api/nhc/election/:nhcId', async (req, res) => {
   }
 });
 
-// 2.7 GET ALL NOMINATIONS
+// 2.7 GET ALL NOMINATIONS (filtered by NHC if nhcId provided)
 app.get('/api/nominations', async (req, res) => {
-  console.log("GET /api/nominations called...");
+  console.log("GET /api/nominations called...", req.query);
+  const { nhcId } = req.query;
   let pool;
   try {
     pool = await sql.connect(dbConfig);
-    const result = await pool.request().query(`
+    
+    let query = `
       SELECT n.Id, n.NHC_Id, n.NominationStartDate, n.NominationEndDate, n.CreatedDate, nz.Name as NHCName 
       FROM Nominations n
       LEFT JOIN NHC_Zones nz ON n.NHC_Id = nz.Id
@@ -1135,8 +1243,16 @@ app.get('/api/nominations', async (req, res) => {
         WHERE n2.NHC_Id = n.NHC_Id
       )
       AND CAST(GETDATE() AS DATE) <= n.NominationEndDate
-      ORDER BY n.NominationStartDate DESC
-    `);
+    `;
+    
+    // If specific NHC requested, filter by it
+    if (nhcId) {
+      query += ` AND n.NHC_Id = ${parseInt(nhcId, 10)}`;
+    }
+    
+    query += ` ORDER BY n.NominationStartDate DESC`;
+    
+    const result = await pool.request().query(query);
     console.log("✓ Fetched active nominations:", result.recordset.length);
     res.json(result.recordset);
   } catch (err) {
@@ -1147,13 +1263,15 @@ app.get('/api/nominations', async (req, res) => {
   }
 });
 
-// 2.8 GET ALL ELECTIONS
+// 2.8 GET ALL ELECTIONS (filtered by NHC if nhcId provided)
 app.get('/api/elections', async (req, res) => {
-  console.log("GET /api/elections called...");
+  console.log("GET /api/elections called...", req.query);
+  const { nhcId } = req.query;
   let pool;
   try {
     pool = await sql.connect(dbConfig);
-    const result = await pool.request().query(`
+    
+    let query = `
       SELECT e.Id, e.NHC_Id, e.ElectionStartDate, e.ElectionEndDate, e.CreatedDate, nz.Name as NHCName 
       FROM Elections e
       LEFT JOIN NHC_Zones nz ON e.NHC_Id = nz.Id
@@ -1163,8 +1281,16 @@ app.get('/api/elections', async (req, res) => {
         WHERE e2.NHC_Id = e.NHC_Id
       )
       AND CAST(GETDATE() AS DATE) < e.ElectionEndDate
-      ORDER BY e.ElectionStartDate DESC
-    `);
+    `;
+    
+    // If specific NHC requested, filter by it
+    if (nhcId) {
+      query += ` AND e.NHC_Id = ${parseInt(nhcId, 10)}`;
+    }
+    
+    query += ` ORDER BY e.ElectionStartDate DESC`;
+    
+    const result = await pool.request().query(query);
     console.log("✓ Fetched active elections:", result.recordset.length);
     res.json(result.recordset);
   } catch (err) {
@@ -1317,7 +1443,8 @@ app.post('/api/signup', async (req, res) => {
           await pool.request()
             .input('UserCNIC', sql.NVarChar, cnic)
             .input('NHC_Code', sql.NVarChar, code)
-            .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code) VALUES (@UserCNIC, @NHC_Code)');
+            .input('Role', sql.NVarChar, 'Member')
+            .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code, Role) VALUES (@UserCNIC, @NHC_Code, @Role)');
         } catch(e) {
           // ignore duplicates
         }
@@ -1422,7 +1549,8 @@ app.put('/api/user', async (req, res) => {
           await pool.request()
             .input('UserCNIC', sql.NVarChar, cnic)
             .input('NHC_Code', sql.NVarChar, code)
-            .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code) VALUES (@UserCNIC, @NHC_Code)');
+            .input('Role', sql.NVarChar, 'Member')
+            .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code, Role) VALUES (@UserCNIC, @NHC_Code, @Role)');
         } catch(e) {
           // ignore duplicate entries
         }
@@ -1528,6 +1656,43 @@ app.get('/api/notifications', async (req, res) => {
   }
 });
 
+// 10. GET USER ROLE IN SPECIFIC NHC
+app.get('/api/user-role', async (req, res) => {
+  const { cnic, nhcCode } = req.query;
+
+  if (!cnic || !nhcCode) {
+    return res.status(400).json({ error: 'Missing cnic or nhcCode' });
+  }
+
+  let pool;
+  try {
+    pool = await sql.connect(dbConfig);
+    
+    // Query UserNHCs table for this user's role in this specific NHC
+    const result = await pool.request()
+      .input('CNIC', sql.NVarChar, cnic)
+      .input('NHC_Code', sql.NVarChar, nhcCode)
+      .query(`
+        SELECT Role 
+        FROM UserNHCs 
+        WHERE UserCNIC = @CNIC 
+        AND NHC_Code = @NHC_Code
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found in this NHC' });
+    }
+
+    const role = result.recordset[0].Role || 'Member';
+    res.json({ role });
+  } catch (err) {
+    console.error('Error fetching user role:', err);
+    res.status(500).json({ error: 'Failed to fetch user role' });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
 // GET single user by CNIC
 app.get('/api/user', async (req, res) => {
   const { cnic } = req.query;
@@ -1575,6 +1740,24 @@ app.get('/api/requests', async (req, res) => {
   }
 });
 
+app.get('/api/committee-settings', async (req, res) => {
+  let pool;
+  try {
+    pool = await sql.connect(dbConfig);
+    const result = await pool.request().query(`
+      SELECT TOP 1 SettingValue
+      FROM CommitteeSettings
+      WHERE SettingKey = 'CommitteeMemberCount'
+    `);
+    const committeeMemberCount = result.recordset.length > 0 ? Number(result.recordset[0].SettingValue) || 3 : 3;
+    res.json({ committeeMemberCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
 // POST: Submit Complaint
 app.post('/api/complaint', complaintUpload.fields([
   { name: 'photos', maxCount: 5 },
@@ -1615,12 +1798,27 @@ app.post('/api/complaint', complaintUpload.fields([
     const photoPathsJson = photoPaths.length > 0 ? JSON.stringify(photoPaths) : null;
 
     pool = await sql.connect(dbConfig);
+
+    // Resolve and normalize NHC code. If client did not send it, infer from user mapping.
+    let effectiveNhcCode = String(nhcCode || '').trim();
+    if (!effectiveNhcCode) {
+      const mapped = await pool.request()
+        .input('UserCNIC', sql.NVarChar, userCnic)
+        .query('SELECT TOP 1 NHC_Code FROM UserNHCs WHERE UserCNIC = @UserCNIC ORDER BY Id DESC');
+      if (mapped.recordset.length > 0) {
+        effectiveNhcCode = String(mapped.recordset[0].NHC_Code || '').trim();
+      }
+    }
+
+    if (!effectiveNhcCode) {
+      return res.status(400).json({ error: 'NHC not found for user. Please re-login and try again.' });
+    }
     
     // Insert complaint into database
     const result = await pool.request()
       .input('UserCNIC', sql.NVarChar, userCnic)
       .input('UserName', sql.NVarChar, userName || '')
-      .input('NHC_Code', sql.NVarChar, nhcCode || '')
+      .input('NHC_Code', sql.NVarChar, effectiveNhcCode)
       .input('Category', sql.NVarChar, category)
       .input('Description', sql.NVarChar(sql.MAX), description)
       .input('HasBudget', sql.Bit, hasBudget === '1' ? 1 : 0)
@@ -1642,6 +1840,45 @@ app.post('/api/complaint', complaintUpload.fields([
       `);
 
     const complaintId = result.recordset[0].id;
+
+    await logComplaintActivity(pool, {
+      complaintId,
+      actorCnic: userCnic,
+      actorRole: 'User',
+      actionType: 'complaint-created',
+      remarksSnapshot: description,
+      decisionSnapshot: null,
+      minutesPathSnapshot: null,
+      resolutionPhotosSnapshot: photoPathsJson,
+      statusSnapshot: 'Pending',
+    });
+
+    // Notify presidents of the same NHC so they can see/respond quickly.
+    try {
+      const presidentRes = await pool.request()
+        .input('NHC_Code', sql.NVarChar, effectiveNhcCode)
+        .query(`
+          SELECT DISTINCT u.CNIC
+          FROM Users u
+          INNER JOIN UserNHCs m ON m.UserCNIC = u.CNIC
+          WHERE LOWER(LTRIM(RTRIM(m.NHC_Code))) = LOWER(LTRIM(RTRIM(@NHC_Code)))
+            AND LOWER(LTRIM(RTRIM(u.Role))) = 'president'
+        `);
+
+      for (const p of presidentRes.recordset) {
+        try {
+          await pool.request()
+            .input('RecipientCNIC', sql.NVarChar, p.CNIC)
+            .input('Message', sql.NVarChar(sql.MAX), `New complaint filed in ${effectiveNhcCode}: ${category}`)
+            .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+        } catch (notifyErr) {
+          console.error('Failed to notify president for complaint:', notifyErr);
+        }
+      }
+    } catch (presErr) {
+      console.error('Failed to lookup presidents for complaint notification:', presErr);
+    }
+
     res.status(201).json({ 
       message: 'Complaint submitted successfully', 
       complaintId: complaintId,
@@ -1675,10 +1912,20 @@ app.get('/api/complaints/:userCnic', async (req, res) => {
   let pool;
   try {
     const { userCnic } = req.params;
+    const nhcCode = req.query.nhcCode ? String(req.query.nhcCode).trim() : null;
     pool = await sql.connect(dbConfig);
-    const result = await pool.request()
-      .input('UserCNIC', sql.NVarChar, userCnic)
-      .query('SELECT * FROM Complaints WHERE UserCNIC = @UserCNIC ORDER BY CreatedDate DESC');
+    
+    let query = 'SELECT * FROM Complaints WHERE UserCNIC = @UserCNIC';
+    const reqSql = pool.request().input('UserCNIC', sql.NVarChar, userCnic);
+    
+    // Optional NHC filtering for multi-NHC scenarios
+    if (nhcCode) {
+      query += ' AND NHC_Code = @NHC_Code';
+      reqSql.input('NHC_Code', sql.NVarChar, nhcCode);
+    }
+    
+    query += ' ORDER BY CreatedDate DESC';
+    const result = await reqSql.query(query);
     res.json(result.recordset);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1691,13 +1938,111 @@ app.get('/api/complaints/:userCnic', async (req, res) => {
 app.get('/api/complaints-by-nhc/:nhcCode', async (req, res) => {
   let pool;
   try {
-    const { nhcCode } = req.params;
+    const nhcCode = String(req.params.nhcCode || '').trim();
+    if (!nhcCode || nhcCode.toLowerCase() === 'undefined' || nhcCode.toLowerCase() === 'null') {
+      return res.status(400).json({ error: 'Valid nhcCode is required' });
+    }
     pool = await sql.connect(dbConfig);
     const result = await pool.request()
       .input('NHC_Code', sql.NVarChar, nhcCode)
-      .query('SELECT * FROM Complaints WHERE NHC_Code = @NHC_Code ORDER BY CreatedDate DESC');
+      .query(`
+        SELECT *
+        FROM Complaints
+        WHERE LOWER(LTRIM(RTRIM(NHC_Code))) = LOWER(LTRIM(RTRIM(@NHC_Code)))
+        ORDER BY CreatedDate DESC
+      `);
     res.json(result.recordset);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+app.get('/api/complaints/:id/history', async (req, res) => {
+  let pool;
+  try {
+    const complaintId = parseInt(req.params.id, 10);
+    const actorCnic = String(req.query.actorCnic || '').trim();
+
+    if (!complaintId) {
+      return res.status(400).json({ error: 'Valid complaint id is required' });
+    }
+    if (!actorCnic) {
+      return res.status(400).json({ error: 'actorCnic is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    const actorRes = await pool.request()
+      .input('CNIC', sql.NVarChar, actorCnic)
+      .query('SELECT CNIC, Role FROM Users WHERE CNIC = @CNIC');
+
+    if (actorRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Actor user not found' });
+    }
+
+    const actorRole = String(actorRes.recordset[0].Role || '').toLowerCase();
+
+    const complaintRes = await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .query('SELECT Id, NHC_Code FROM Complaints WHERE Id = @Id');
+
+    if (complaintRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const complaintNhcCode = String(complaintRes.recordset[0].NHC_Code || '').trim();
+
+    let allowed = actorRole === 'admin';
+
+    if (!allowed && actorRole === 'president') {
+      const nhcMapRes = await pool.request()
+        .input('UserCNIC', sql.NVarChar, actorCnic)
+        .input('NHC_Code', sql.NVarChar, complaintNhcCode)
+        .query(`
+          SELECT 1
+          FROM UserNHCs
+          WHERE UserCNIC = @UserCNIC
+            AND LOWER(LTRIM(RTRIM(NHC_Code))) = LOWER(LTRIM(RTRIM(@NHC_Code)))
+        `);
+      allowed = nhcMapRes.recordset.length > 0;
+    }
+
+    if (!allowed) {
+      const panelMemberRes = await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .input('MemberCNIC', sql.NVarChar, actorCnic)
+        .query(`
+          SELECT 1
+          FROM PanelMembers pm
+          INNER JOIN Panels p ON p.Id = pm.PanelId
+          LEFT JOIN PanelComplaints pc ON pc.PanelId = p.Id
+          WHERE pm.CNIC = @MemberCNIC
+            AND LOWER(ISNULL(pm.InviteStatus, 'accepted')) = 'accepted'
+            AND (p.ComplaintId = @ComplaintId OR pc.ComplaintId = @ComplaintId)
+        `);
+      allowed = panelMemberRes.recordset.length > 0;
+    }
+
+    if (!allowed) {
+      return res.status(403).json({ error: 'You are not allowed to view this complaint history' });
+    }
+
+    const historyRes = await pool.request()
+      .input('ComplaintId', sql.Int, complaintId)
+      .query(`
+        SELECT Id, ComplaintId, ActorCNIC, ActorRole, ActionType,
+               RemarksSnapshot, DecisionSnapshot, MinutesPathSnapshot,
+               ResolutionPhotosSnapshot, StatusSnapshot, CreatedDate
+        FROM ComplaintActivityLog
+        WHERE ComplaintId = @ComplaintId
+        ORDER BY CreatedDate DESC, Id DESC
+      `);
+
+    res.json(historyRes.recordset || []);
+  } catch (err) {
+    console.error('Error fetching complaint history:', err);
     res.status(500).json({ error: err.message });
   } finally {
     if (pool) await pool.close();
@@ -1709,6 +2054,7 @@ app.put('/api/complaints/:id/resolution', complaintUpload.array('resolutionPhoto
   let pool;
   try {
     const complaintId = parseInt(req.params.id, 10);
+    const actorCnic = String(req.body?.actorCnic || '').trim();
     const remarks = String(req.body?.remarks || '').trim();
     const status = String(req.body?.status || 'Resolved').trim() || 'Resolved';
 
@@ -1752,6 +2098,30 @@ app.put('/api/complaints/:id/resolution', complaintUpload.array('resolutionPhoto
         WHERE Id = @Id
       `);
 
+    let actorRole = null;
+    if (actorCnic) {
+      try {
+        const actorRes = await pool.request()
+          .input('CNIC', sql.NVarChar, actorCnic)
+          .query('SELECT Role FROM Users WHERE CNIC = @CNIC');
+        actorRole = actorRes.recordset.length > 0 ? String(actorRes.recordset[0].Role || '') : null;
+      } catch (_) {
+        actorRole = null;
+      }
+    }
+
+    await logComplaintActivity(pool, {
+      complaintId,
+      actorCnic,
+      actorRole,
+      actionType: 'resolution-update',
+      remarksSnapshot: remarks || null,
+      decisionSnapshot: null,
+      minutesPathSnapshot: null,
+      resolutionPhotosSnapshot: mergedPaths.length > 0 ? JSON.stringify(mergedPaths) : null,
+      statusSnapshot: status,
+    });
+
     try {
       const owner = currentRes.recordset[0];
       await pool.request()
@@ -1780,15 +2150,41 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
   let pool;
   try {
     const complaintId = parseInt(req.params.id, 10);
+    const actorCnic = String(req.body?.actorCnic || '').trim();
     const remarks = String(req.body?.remarks || '').trim();
     const status = String(req.body?.status || 'In-Progress').trim() || 'In-Progress';
     const decision = String(req.body?.decision || '').trim();
+    const budgetAmount = String(req.body?.budgetAmount || '').trim();
+    const budgetReason = String(req.body?.budgetReason || '').trim();
+    const moreWorkNeeded = String(req.body?.moreWorkNeeded || '').trim();
 
     if (!complaintId) {
       return res.status(400).json({ error: 'Valid complaint id is required' });
     }
 
+    if (!actorCnic) {
+      return res.status(400).json({ error: 'actorCnic is required' });
+    }
+
+    if (decision === 'budget' && (!budgetAmount || !budgetReason)) {
+      return res.status(400).json({ error: 'Budget amount and reason are required for budget decision' });
+    }
+
+    if (decision === 'inprogress' && !moreWorkNeeded) {
+      return res.status(400).json({ error: 'More work details are required for in-progress decision' });
+    }
+
     pool = await sql.connect(dbConfig);
+
+    const actorRes = await pool.request()
+      .input('CNIC', sql.NVarChar, actorCnic)
+      .query('SELECT Role FROM Users WHERE CNIC = @CNIC');
+
+    if (actorRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Actor user not found' });
+    }
+
+    const actorRole = String(actorRes.recordset[0].Role || '').toLowerCase();
 
     const currentRes = await pool.request()
       .input('Id', sql.Int, complaintId)
@@ -1800,13 +2196,27 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
 
     const existingMinutesPath = currentRes.recordset[0].MeetingMinutesPath || null;
     const minutesPath = req.file ? `/meeting-minutes/${req.file.filename}` : existingMinutesPath;
+    const detailsParts = [];
+    if (remarks) detailsParts.push(remarks);
+    if (decision === 'budget') {
+      detailsParts.push(`Budget Needed: ${budgetAmount}`);
+      detailsParts.push(`Budget Reason: ${budgetReason}`);
+    }
+    if (decision === 'inprogress' && moreWorkNeeded) {
+      detailsParts.push(`More Work Needed: ${moreWorkNeeded}`);
+    }
+    const mergedRemarks = detailsParts.join('\n\n');
+
+    const normalizedStatus = actorRole === 'president' && String(status || '').toLowerCase() === 'resolved'
+      ? 'Resolved'
+      : 'In-Progress';
 
     await pool.request()
       .input('Id', sql.Int, complaintId)
-      .input('CommitteeRemarks', sql.NVarChar(sql.MAX), remarks || null)
+      .input('CommitteeRemarks', sql.NVarChar(sql.MAX), mergedRemarks || null)
       .input('MeetingDecision', sql.NVarChar(100), decision || null)
       .input('MeetingMinutesPath', sql.NVarChar(sql.MAX), minutesPath)
-      .input('Status', sql.NVarChar(50), status)
+      .input('Status', sql.NVarChar(50), normalizedStatus)
       .query(`
         UPDATE Complaints
         SET CommitteeRemarks = @CommitteeRemarks,
@@ -1818,14 +2228,55 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
         WHERE Id = @Id
       `);
 
+    await logComplaintActivity(pool, {
+      complaintId,
+      actorCnic,
+      actorRole,
+      actionType: actorRole === 'president' && normalizedStatus === 'Resolved' ? 'president-finalized' : 'committee-meeting-update',
+      remarksSnapshot: mergedRemarks || null,
+      decisionSnapshot: decision || null,
+      minutesPathSnapshot: minutesPath || null,
+      resolutionPhotosSnapshot: null,
+      statusSnapshot: normalizedStatus,
+    });
+
     try {
       const owner = currentRes.recordset[0];
-      await pool.request()
-        .input('RecipientCNIC', sql.NVarChar, owner.UserCNIC)
-        .input('Message', sql.NVarChar(sql.MAX), `Committee meeting updated your complaint (${owner.Category || 'Complaint'}) with latest decision.`)
-        .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+      const normalizedDecision = String(decision || '').toLowerCase();
+
+      if (normalizedStatus === 'Resolved') {
+        const recipients = new Set();
+        if (owner.UserCNIC) recipients.add(String(owner.UserCNIC));
+
+        const panelMembersRes = await pool.request()
+          .input('ComplaintId', sql.Int, complaintId)
+          .query(`
+            SELECT DISTINCT pm.CNIC AS MemberCNIC
+            FROM PanelMembers pm
+            INNER JOIN Panels p ON p.Id = pm.PanelId
+            LEFT JOIN PanelComplaints pc ON pc.PanelId = p.Id
+            WHERE p.ComplaintId = @ComplaintId OR pc.ComplaintId = @ComplaintId
+          `);
+
+        panelMembersRes.recordset.forEach((row) => {
+          if (row.MemberCNIC) recipients.add(String(row.MemberCNIC));
+        });
+
+        const solvedMessage = `Complaint (${owner.Category || 'Complaint'}) has been marked as resolved by the president.`;
+        for (const recipientCnic of recipients) {
+          await pool.request()
+            .input('RecipientCNIC', sql.NVarChar, recipientCnic)
+            .input('Message', sql.NVarChar(sql.MAX), solvedMessage)
+            .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+        }
+      } else {
+        await pool.request()
+          .input('RecipientCNIC', sql.NVarChar, owner.UserCNIC)
+          .input('Message', sql.NVarChar(sql.MAX), `Committee meeting updated your complaint (${owner.Category || 'Complaint'}). It is waiting for president final review.`)
+          .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+      }
     } catch (notifyErr) {
-      console.error('Failed to notify complaint owner after committee meeting update:', notifyErr);
+      console.error('Failed to send notifications after committee meeting update:', notifyErr);
     }
 
     res.json({
@@ -2018,7 +2469,8 @@ app.put('/api/request/assign', async (req, res) => {
       await pool.request()
         .input('UserCNIC', sql.NVarChar, cnic)
         .input('NHC_Code', sql.NVarChar, nhcCode)
-        .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code) VALUES (@UserCNIC, @NHC_Code)');
+        .input('Role', sql.NVarChar, 'Member')
+        .query('INSERT INTO UserNHCs (UserCNIC, NHC_Code, Role) VALUES (@UserCNIC, @NHC_Code, @Role)');
     } catch (e) {
       // duplicate key means mapping already exists, ignore
     }
@@ -2299,6 +2751,7 @@ const ensurePanelTablesExist = async (pool) => {
       NHC_Id INT NOT NULL,
       ComplaintId INT NULL,
       Description NVARCHAR(MAX) NULL,
+      IsCommittee BIT DEFAULT 0,
       Status NVARCHAR(20) DEFAULT 'pending',
       CreatedDate DATETIME DEFAULT GETDATE()
     )
@@ -2315,6 +2768,22 @@ const ensurePanelTablesExist = async (pool) => {
   `);
 
   await pool.request().query(`
+    IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'IsCommittee' AND Object_ID = OBJECT_ID('Panels'))
+    ALTER TABLE Panels ADD IsCommittee BIT DEFAULT 0;
+  `);
+
+  await pool.request().query(`
+    UPDATE p
+    SET p.IsCommittee = 1
+    FROM Panels p
+    WHERE ISNULL(p.IsCommittee, 0) = 0
+      AND EXISTS (
+        SELECT 1 FROM PanelMembers pm
+        WHERE pm.PanelId = p.Id AND LOWER(ISNULL(pm.Role, '')) = 'head'
+      );
+  `);
+
+  await pool.request().query(`
     IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PanelMembers' AND xtype='U')
     CREATE TABLE PanelMembers (
       Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -2326,7 +2795,75 @@ const ensurePanelTablesExist = async (pool) => {
       FOREIGN KEY (PanelId) REFERENCES Panels(Id)
     )
   `);
+
+  await pool.request().query(`
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PanelComplaints' AND xtype='U')
+    CREATE TABLE PanelComplaints (
+      Id INT IDENTITY(1,1) PRIMARY KEY,
+      PanelId INT NOT NULL,
+      ComplaintId INT NOT NULL,
+      CreatedDate DATETIME DEFAULT GETDATE(),
+      CONSTRAINT UQ_PanelComplaints_Panel_Complaint UNIQUE (PanelId, ComplaintId),
+      FOREIGN KEY (PanelId) REFERENCES Panels(Id),
+      FOREIGN KEY (ComplaintId) REFERENCES Complaints(Id)
+    )
+  `);
+
+  await pool.request().query(`
+    IF NOT EXISTS (
+      SELECT 1 FROM sys.indexes WHERE name = 'UQ_PanelComplaints_Panel_Complaint' AND object_id = OBJECT_ID('PanelComplaints')
+    )
+    ALTER TABLE PanelComplaints ADD CONSTRAINT UQ_PanelComplaints_Panel_Complaint UNIQUE (PanelId, ComplaintId);
+  `);
 };
+
+async function getCommitteeMemberCount(pool) {
+  const result = await pool.request().query(`
+    SELECT TOP 1 SettingValue
+    FROM CommitteeSettings
+    WHERE SettingKey = 'CommitteeMemberCount'
+  `);
+  const count = result.recordset.length > 0 ? Number(result.recordset[0].SettingValue) : 3;
+  return Number.isFinite(count) && count > 0 ? count : 3;
+}
+
+async function logComplaintActivity(pool, {
+  complaintId,
+  actorCnic,
+  actorRole,
+  actionType,
+  remarksSnapshot,
+  decisionSnapshot,
+  minutesPathSnapshot,
+  resolutionPhotosSnapshot,
+  statusSnapshot,
+}) {
+  try {
+    await pool.request()
+      .input('ComplaintId', sql.Int, complaintId)
+      .input('ActorCNIC', sql.NVarChar, actorCnic || null)
+      .input('ActorRole', sql.NVarChar, actorRole || null)
+      .input('ActionType', sql.NVarChar, actionType)
+      .input('RemarksSnapshot', sql.NVarChar(sql.MAX), remarksSnapshot || null)
+      .input('DecisionSnapshot', sql.NVarChar(100), decisionSnapshot || null)
+      .input('MinutesPathSnapshot', sql.NVarChar(sql.MAX), minutesPathSnapshot || null)
+      .input('ResolutionPhotosSnapshot', sql.NVarChar(sql.MAX), resolutionPhotosSnapshot || null)
+      .input('StatusSnapshot', sql.NVarChar(50), statusSnapshot || null)
+      .query(`
+        INSERT INTO ComplaintActivityLog (
+          ComplaintId, ActorCNIC, ActorRole, ActionType,
+          RemarksSnapshot, DecisionSnapshot, MinutesPathSnapshot,
+          ResolutionPhotosSnapshot, StatusSnapshot, CreatedDate
+        ) VALUES (
+          @ComplaintId, @ActorCNIC, @ActorRole, @ActionType,
+          @RemarksSnapshot, @DecisionSnapshot, @MinutesPathSnapshot,
+          @ResolutionPhotosSnapshot, @StatusSnapshot, GETDATE()
+        )
+      `);
+  } catch (logErr) {
+    console.error('Failed to write ComplaintActivityLog entry:', logErr);
+  }
+}
 
 // get available members in an NHC for panel creation
 app.get('/api/nhc/:id/members', async (req, res) => {
@@ -2384,12 +2921,23 @@ app.post('/api/panels', async (req, res) => {
   try {
     pool = await new sql.ConnectionPool(dbConfig).connect();
     await ensurePanelTablesExist(pool);
+    const committeeMemberCount = isCommittee ? await getCommitteeMemberCount(pool) : null;
     // verify president exists
     const pres = await pool.request()
       .input('CNIC', sql.NVarChar, presidentCnic)
-      .query('SELECT CNIC FROM Users WHERE CNIC = @CNIC');
+      .query('SELECT CNIC, Role FROM Users WHERE CNIC = @CNIC');
     if (pres.recordset.length === 0) {
       return res.status(400).json({ error: 'President CNIC not found' });
+    }
+
+    if (isCommittee) {
+      const creatorRole = String(pres.recordset[0].Role || '').toLowerCase();
+      if (creatorRole !== 'admin' && creatorRole !== 'president') {
+        return res.status(403).json({ error: 'Only Admin can create committees' });
+      }
+      if (memberList.length !== committeeMemberCount) {
+        return res.status(400).json({ error: `Committee must have exactly ${committeeMemberCount} members` });
+      }
     }
 
     if (!isCommittee) {
@@ -2444,6 +2992,13 @@ app.post('/api/panels', async (req, res) => {
       seenCnics.add(String(m.cnic));
     }
 
+    if (isCommittee) {
+      const headCount = memberList.filter((m) => String(m.role || '').toLowerCase() === 'head').length;
+      if (headCount !== 1) {
+        return res.status(400).json({ error: 'Committee must have exactly one Head' });
+      }
+    }
+
     if (!isCommittee) {
       // Verify roles exist in Positions table for election panel flow.
       const posRes = await pool.request().query('SELECT Name FROM Positions');
@@ -2488,10 +3043,21 @@ app.post('/api/panels', async (req, res) => {
       .input('NHC_Id', sql.Int, nhcId)
       .input('ComplaintId', sql.Int, parsedComplaintId)
       .input('Description', sql.NVarChar(sql.MAX), description || null)
+      .input('IsCommittee', sql.Bit, isCommittee ? 1 : 0)
       .input('Status', sql.NVarChar, isCommittee ? 'active' : 'pending')
-      .query('INSERT INTO Panels (PanelName, PresidentCNIC, NHC_Id, ComplaintId, Description, Status) VALUES (@PanelName, @PresidentCNIC, @NHC_Id, @ComplaintId, @Description, @Status); SELECT SCOPE_IDENTITY() as id');
+      .query('INSERT INTO Panels (PanelName, PresidentCNIC, NHC_Id, ComplaintId, Description, IsCommittee, Status) VALUES (@PanelName, @PresidentCNIC, @NHC_Id, @ComplaintId, @Description, @IsCommittee, @Status); SELECT SCOPE_IDENTITY() as id');
 
     const panelId = insPanel.recordset[0].id;
+
+    if (isCommittee && parsedComplaintId) {
+      await pool.request()
+        .input('PanelId', sql.Int, panelId)
+        .input('ComplaintId', sql.Int, parsedComplaintId)
+        .query(`
+          IF NOT EXISTS (SELECT 1 FROM PanelComplaints WHERE PanelId = @PanelId AND ComplaintId = @ComplaintId)
+          INSERT INTO PanelComplaints (PanelId, ComplaintId) VALUES (@PanelId, @ComplaintId)
+        `);
+    }
 
     // add president first
     await pool.request()
@@ -2570,6 +3136,89 @@ app.post('/api/panels', async (req, res) => {
     res.status(201).json({ message: 'Panel created', panelId });
   } catch (err) {
     console.error('Create panel error:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// assign an existing complaint to an active committee
+app.post('/api/panels/:id/complaints', async (req, res) => {
+  const panelId = parseInt(req.params.id, 10);
+  const complaintId = parseInt(req.body?.complaintId, 10);
+  const presidentCnic = String(req.body?.presidentCnic || '').trim();
+
+  if (!panelId || !complaintId || !presidentCnic) {
+    return res.status(400).json({ error: 'panelId, complaintId and presidentCnic are required' });
+  }
+
+  let pool;
+  try {
+    pool = await new sql.ConnectionPool(dbConfig).connect();
+    await ensurePanelTablesExist(pool);
+
+    const presRes = await pool.request()
+      .input('CNIC', sql.NVarChar, presidentCnic)
+      .query('SELECT CNIC, Role FROM Users WHERE CNIC = @CNIC');
+
+    if (presRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'President not found' });
+    }
+
+    if (String(presRes.recordset[0].Role || '').toLowerCase() !== 'president') {
+      return res.status(403).json({ error: 'Only President can assign complaints to committees' });
+    }
+
+    const panelRes = await pool.request()
+      .input('PanelId', sql.Int, panelId)
+      .query('SELECT Id, PanelName, PresidentCNIC, ComplaintId FROM Panels WHERE Id = @PanelId');
+
+    if (panelRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Committee not found' });
+    }
+
+    const complaintRes = await pool.request()
+      .input('ComplaintId', sql.Int, complaintId)
+      .query('SELECT Id, UserCNIC, Category, Status FROM Complaints WHERE Id = @ComplaintId');
+
+    if (complaintRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const existingMap = await pool.request()
+      .input('PanelId', sql.Int, panelId)
+      .input('ComplaintId', sql.Int, complaintId)
+      .query('SELECT 1 FROM PanelComplaints WHERE PanelId = @PanelId AND ComplaintId = @ComplaintId');
+
+    if (existingMap.recordset.length === 0) {
+      await pool.request()
+        .input('PanelId', sql.Int, panelId)
+        .input('ComplaintId', sql.Int, complaintId)
+        .query('INSERT INTO PanelComplaints (PanelId, ComplaintId) VALUES (@PanelId, @ComplaintId)');
+    }
+
+    await pool.request()
+      .input('ComplaintId', sql.Int, complaintId)
+      .query("UPDATE Complaints SET Status = 'In-Progress', UpdatedDate = GETDATE() WHERE Id = @ComplaintId");
+
+    try {
+      const complaintOwner = complaintRes.recordset[0];
+      await pool.request()
+        .input('RecipientCNIC', sql.NVarChar, complaintOwner.UserCNIC)
+        .input('Message', sql.NVarChar(sql.MAX), `Your complaint (${complaintOwner.Category || 'Complaint'}) has been assigned to committee '${panelRes.recordset[0].PanelName || 'Committee'}'.`)
+        .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+    } catch (notifyErr) {
+      console.error('Failed to notify complaint owner for active committee assignment:', notifyErr);
+    }
+
+    res.json({
+      success: true,
+      message: 'Complaint assigned to committee successfully',
+      panelId,
+      complaintId,
+    });
+  } catch (err) {
+    console.error('Assign complaint to committee error:', err);
     res.status(500).json({ error: err.message });
   } finally {
     if (pool) await pool.close();
@@ -2717,29 +3366,60 @@ app.post('/api/panels/:id/members/decline', async (req, res) => {
 app.get('/api/panels', async (req, res) => {
   const nhcId = req.query.nhcId ? parseInt(req.query.nhcId, 10) : null;
   const cnic = req.query.cnic || null;
+  const committeeOnly = String(req.query.committeeOnly || '').toLowerCase() === 'true';
   let pool;
   try {
     pool = await new sql.ConnectionPool(dbConfig).connect();
     await ensurePanelTablesExist(pool);
-    let query = `SELECT p.Id, p.PanelName, p.PresidentCNIC, p.NHC_Id, p.ComplaintId, p.Description, p.Status, p.CreatedDate,
+    let query = `SELECT p.Id, p.PanelName, p.PresidentCNIC, p.NHC_Id,
+        COALESCE(pc.ComplaintId, p.ComplaintId) AS ComplaintId,
+        p.Description, p.Status, p.CreatedDate,
           c.Category AS ComplaintCategory, c.Status AS ComplaintStatus,
           c.Description AS ComplaintDescription, c.UserName AS ComplaintUserName,
           c.UserCNIC AS ComplaintUserCNIC, c.ComplaintType, c.CreatedDate AS ComplaintCreatedDate,
           c.CommitteeRemarks, c.MeetingDecision, c.MeetingMinutesPath, c.MeetingDate,
               (SELECT COUNT(1) FROM PanelMembers pm WHERE pm.PanelId = p.Id) AS MemberCount
                  FROM Panels p
-                 LEFT JOIN Complaints c ON c.Id = p.ComplaintId`;
+           LEFT JOIN PanelComplaints pc ON pc.PanelId = p.Id
+           LEFT JOIN Complaints c ON c.Id = COALESCE(pc.ComplaintId, p.ComplaintId)`;
     const inputs = [];
     const conditions = [];
     if (cnic) {
-      // user is either president or a member
-      query += ` LEFT JOIN PanelMembers m ON m.PanelId = p.Id`;
-      conditions.push('(p.PresidentCNIC = @Cnic OR m.CNIC = @Cnic)');
       inputs.push({ name: 'Cnic', type: sql.NVarChar, value: cnic });
+      if (committeeOnly) {
+        // "My Committee" must only show committees where user is an accepted member.
+        // Also require a Head role to distinguish committees from election panels.
+        conditions.push(`EXISTS (
+          SELECT 1
+          FROM PanelMembers m
+          WHERE m.PanelId = p.Id
+            AND m.CNIC = @Cnic
+            AND LOWER(ISNULL(m.InviteStatus, 'accepted')) = 'accepted'
+        )`);
+        conditions.push(`EXISTS (
+          SELECT 1
+          FROM PanelMembers hm
+          WHERE hm.PanelId = p.Id
+            AND LOWER(ISNULL(hm.Role, '')) = 'head'
+        )`);
+      } else {
+        conditions.push(`(
+          p.PresidentCNIC = @Cnic
+          OR EXISTS (
+            SELECT 1 FROM PanelMembers m
+            WHERE m.PanelId = p.Id AND m.CNIC = @Cnic
+          )
+        )`);
+      }
     }
     if (nhcId) {
       conditions.push('p.NHC_Id = @NHC_Id');
       inputs.push({ name: 'NHC_Id', type: sql.Int, value: nhcId });
+    }
+    if (committeeOnly) {
+      conditions.push('ISNULL(p.IsCommittee, 0) = 1');
+      // Committees must have a complaint assigned (nomination panels don't)
+      conditions.push('(COALESCE(pc.ComplaintId, p.ComplaintId) IS NOT NULL)');
     }
     if (conditions.length > 0) {
       query += ' WHERE ' + conditions.join(' AND ');

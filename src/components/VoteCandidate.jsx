@@ -38,9 +38,9 @@ const VoteCandidate = ({ user, onBack }) => {
           return;
         }
 
-        // Load election dates
-        const elections = await getElections();
-        const election = (elections || []).find(e => Number(e.NHC_Id) === Number(user.nhcId) || Number(e.NHC_Id) === user.nhcId);
+        // Load election dates for this specific NHC
+        const elections = await getElections(resolvedNhcId);
+        const election = (elections || [])[0]; // Backend now filters by nhcId
         
         if (election && election.ElectionStartDate && election.ElectionEndDate) {
           // Parse DATE from DB string "YYYY-MM-DD" safely as local date

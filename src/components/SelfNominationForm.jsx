@@ -99,9 +99,9 @@ const SelfNominationForm = ({ user, onBack }) => {
           return;
         }
 
-        // determine nomination period as before
-        const nominations = await getNominations();
-        const nhcRecords = (nominations || []).filter(n => Number(n.NHC_Id) === Number(user.nhcId) || Number(n.NHCId) === Number(user.nhcId));
+        // determine nomination period for this specific NHC
+        const nominations = await getNominations(user.nhcId);
+        const nhcRecords = (nominations || []); // Backend now filters by nhcId
         let record = null;
         if (nhcRecords.length > 0) {
           const today = new Date();
@@ -150,9 +150,9 @@ const SelfNominationForm = ({ user, onBack }) => {
           setNominationEndDate(null);
         }
 
-        // check if user is part of any panel already
+        // check if user is part of any panel already in this NHC
         try {
-          const panels = await getPanels({ cnic: user.cnic });
+          const panels = await getPanels({ cnic: user.cnic, nhcId: user.nhcId });
           setAlreadyNominated((panels || []).length > 0);
         } catch (pmErr) {
           console.error('Failed to check panels', pmErr);
@@ -230,7 +230,7 @@ const SelfNominationForm = ({ user, onBack }) => {
     let interval = null;
     const check = async () => {
       try {
-        const panels = await getPanels({}); // get all panels for user by cnic
+        const panels = await getPanels({ nhcId: user.nhcId }); // get panels for this NHC
         const panel = (panels || []).find(p => p.Id === createdPanelId);
         if (panel && panel.Status === 'approved') {
           clearInterval(interval);

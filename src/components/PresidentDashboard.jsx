@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { getComplaintsByNHC } from '../api';
+import { assignComplaintToPanel, getComplaintsByNHC, getPanels } from '../api';
 import AllSuggestions from './AllSuggestions'; // NEW: Import AllSuggestions
+import CreateCommitteeScreen from './CreateCommitteeScreen';
+import CommitteeMeetingScreen from './CommitteeMeetingScreen';
 import logo from '../assets/logo.png';
 
 const PresidentDashboard = ({ user, onClose }) => {
@@ -9,6 +11,12 @@ const PresidentDashboard = ({ user, onClose }) => {
   const [error, setError] = useState('');
   const [selectedCategory, setSelectedCategory] = useState(null); // null = overview, 'total', 'open', 'in-progress', 'resolved'
   const [showSuggestions, setShowSuggestions] = useState(false); // NEW: State for showing suggestions
+  const [panels, setPanels] = useState([]);
+  const [showCreateCommittee, setShowCreateCommittee] = useState(false);
+  const [selectedComplaintForAssignment, setSelectedComplaintForAssignment] = useState(null);
+  const [showFinalReview, setShowFinalReview] = useState(false);
+  const [selectedComplaintForReview, setSelectedComplaintForReview] = useState(null);
+  const [assignmentMode, setAssignmentMode] = useState(null); // null, 'new', 'existing'
 
   const normalizeStatus = (status) => {
     const normalized = (status || 'Pending').toLowerCase().replace(/\s+/g, '-');
@@ -33,27 +41,60 @@ const PresidentDashboard = ({ user, onClose }) => {
     return status || 'Pending';
   };
 
+  const refreshDashboardData = async () => {
+    try {
+      setLoading(true);
+      const [complaintsData, panelsData] = await Promise.all([
+        getComplaintsByNHC(user.nhcCode),
+        getPanels(user.nhcId ? { nhcId: user.nhcId } : { cnic: user.cnic }),
+      ]);
+      setComplaints(complaintsData || []);
+      setPanels(panelsData || []);
+      setError('');
+    } catch (err) {
+      console.error('Error fetching complaints/panels:', err);
+      setError(err.message);
+      setComplaints([]);
+      setPanels([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchComplaints = async () => {
-      try {
-        setLoading(true);
-        const data = await getComplaintsByNHC(user.nhcCode);
-        setComplaints(data || []);
-      } catch (err) {
-        console.error('Error fetching complaints:', err);
-        setError(err.message);
-      } finally {
-        setLoading(false);
+    refreshDashboardData();
+  }, [user.nhcCode, user.nhcId, user.cnic]);
+
+  const assignedComplaintIds = new Set(
+    (panels || [])
+      .map((p) => p.ComplaintId)
+      .filter((id) => id !== null && typeof id !== 'undefined')
+      .map((id) => Number(id))
+  );
+
+  const isComplaintAssigned = (complaintId) => assignedComplaintIds.has(Number(complaintId));
+
+  const uniqueActiveCommittees = Object.values(
+    (panels || []).reduce((acc, panel) => {
+      const status = String(panel.Status || '').toLowerCase();
+      const isActiveCommittee = status === 'active' || status === 'approved';
+      if (!isActiveCommittee) return acc;
+      if (!acc[panel.Id]) {
+        acc[panel.Id] = panel;
       }
-    };
-    fetchComplaints();
-  }, [user.nhcCode]);
+      return acc;
+    }, {})
+  );
 
   // Calculate statistics
   const totalComplaints = complaints.length;
   const pendingComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'pending').length;
   const inProgressComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'in-progress').length;
   const resolvedComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'resolved').length;
+  const finalResolutionRequests = complaints.filter((c) => {
+    const status = normalizeStatus(c.Status);
+    return status === 'in-progress' && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
+  }).length;
 
   // Filter complaints based on selected category
   const getFilteredComplaints = () => {
@@ -66,6 +107,11 @@ const PresidentDashboard = ({ user, onClose }) => {
         return complaints.filter(c => normalizeStatus(c.Status) === 'in-progress');
       case 'resolved':
         return complaints.filter(c => normalizeStatus(c.Status) === 'resolved');
+      case 'final-review':
+        return complaints.filter((c) => {
+          const status = normalizeStatus(c.Status);
+          return status === 'in-progress' && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
+        });
       default:
         return [];
     }
@@ -82,6 +128,8 @@ const PresidentDashboard = ({ user, onClose }) => {
         return 'In-Progress Complaints';
       case 'resolved':
         return 'Resolved Complaints';
+      case 'final-review':
+        return 'Final Resolution Requests';
       default:
         return '';
     }
@@ -277,6 +325,100 @@ const PresidentDashboard = ({ user, onClose }) => {
                 </div>
               </div>
             )}
+
+            {String(user?.role || '').toLowerCase() === 'president' && (
+              <div style={{ marginTop: '12px' }}>
+                <p style={{
+                  margin: '0 0 8px 0',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  color: '#374151'
+                }}>
+                  Committee Remarks:
+                </p>
+                <div style={{
+                  backgroundColor: '#f3f4f6',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '8px',
+                  padding: '10px',
+                  color: '#1f2937',
+                  lineHeight: '1.5',
+                  fontSize: '14px'
+                }}>
+                  {complaint.CommitteeRemarks || 'No remarks yet'}
+                </div>
+              </div>
+            )}
+
+            <div
+              style={{
+                marginTop: '14px',
+                paddingTop: '12px',
+                borderTop: '1px solid #e5e7eb',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '10px',
+                flexWrap: 'wrap'
+              }}
+            >
+              <span
+                style={{
+                  fontSize: '13px',
+                  fontWeight: 'bold',
+                  color: isComplaintAssigned(complaint.Id) ? '#166534' : '#92400e',
+                  backgroundColor: isComplaintAssigned(complaint.Id) ? '#dcfce7' : '#fef3c7',
+                  border: `1px solid ${isComplaintAssigned(complaint.Id) ? '#86efac' : '#fcd34d'}`,
+                  borderRadius: '999px',
+                  padding: '4px 10px'
+                }}
+              >
+                {isComplaintAssigned(complaint.Id) ? 'Assigned to Committee' : 'Not Assigned'}
+              </span>
+
+              {selectedCategory === 'final-review' ? (
+                <button
+                  onClick={() => {
+                    setSelectedComplaintForReview(complaint);
+                    setShowFinalReview(true);
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    backgroundColor: '#f59e0b',
+                    color: 'white'
+                  }}
+                >
+                  Review & Finalize
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    setSelectedComplaintForAssignment(complaint);
+                    setShowCreateCommittee(true);
+                    setAssignmentMode(null);
+                  }}
+                  disabled={isComplaintAssigned(complaint.Id)}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    cursor: isComplaintAssigned(complaint.Id) ? 'not-allowed' : 'pointer',
+                    backgroundColor: isComplaintAssigned(complaint.Id) ? '#cbd5e1' : '#0f766e',
+                    color: 'white',
+                    opacity: isComplaintAssigned(complaint.Id) ? 0.8 : 1
+                  }}
+                >
+                  {isComplaintAssigned(complaint.Id) ? 'Already Assigned' : 'Assign to Committee'}
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -368,6 +510,21 @@ const PresidentDashboard = ({ user, onClose }) => {
                 }}
               >
                 Suggestions
+              </button>
+              <button
+                onClick={() => handleCardClick('final-review')}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: '#f59e0b',
+                  color: 'white',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
+                }}
+              >
+                Final Resolution
               </button>
             </>
           ) : (
@@ -605,6 +762,12 @@ const PresidentDashboard = ({ user, onClose }) => {
           </div>
         )}
 
+        {!loading && selectedCategory === 'final-review' && (
+          <div>
+            {renderComplaintList(getFilteredComplaints(), 'No complaints are waiting for final resolution.')}
+          </div>
+        )}
+
         {/* COMPLAINT DETAILS VIEW */}
         {!loading && selectedCategory && (
           <div>
@@ -642,6 +805,254 @@ const PresidentDashboard = ({ user, onClose }) => {
       {/* NEW: Show All Suggestions */}
       {showSuggestions && (
         <AllSuggestions user={user} onClose={() => setShowSuggestions(false)} />
+      )}
+
+      {showCreateCommittee && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1100,
+            padding: '20px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowCreateCommittee(false);
+              setSelectedComplaintForAssignment(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+              width: '100%',
+              maxWidth: '760px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: '20px' }}>
+              {!assignmentMode ? (
+                <div style={{ backgroundColor: '#ffffff', borderRadius: '12px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                    <h3 style={{ margin: 0, color: '#1f2937', fontSize: '22px' }}>Assign Complaint</h3>
+                    <button
+                      onClick={() => {
+                        setShowCreateCommittee(false);
+                        setSelectedComplaintForAssignment(null);
+                        setAssignmentMode(null);
+                      }}
+                      style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#6b7280' }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <p style={{ marginTop: 0, color: '#64748b', marginBottom: '16px' }}>
+                    Choose whether to create a new committee or assign this complaint to an active committee.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <select
+                      value={assignmentMode || ''}
+                      onChange={(e) => setAssignmentMode(e.target.value || null)}
+                      style={{
+                        width: '100%',
+                        padding: '12px 14px',
+                        borderRadius: '10px',
+                        border: '1px solid #cbd5e1',
+                        backgroundColor: '#ffffff',
+                        color: '#1f2937',
+                        fontSize: '15px',
+                        boxSizing: 'border-box',
+                      }}
+                    >
+                      <option value="">Select assignment type</option>
+                      <option value="new">Create New Committee</option>
+                      <option value="existing">Assign to Active Committee</option>
+                    </select>
+
+                    <button
+                      onClick={() => {
+                        if (!assignmentMode) {
+                          alert('Please choose an assignment type.');
+                          return;
+                        }
+                        setAssignmentMode(assignmentMode);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '12px 16px',
+                        borderRadius: '10px',
+                        border: 'none',
+                        backgroundColor: '#0f766e',
+                        color: 'white',
+                        fontSize: '15px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Continue
+                    </button>
+                  </div>
+                </div>
+              ) : assignmentMode === 'new' ? (
+                <CreateCommitteeScreen
+                  user={user}
+                  initialComplaintId={selectedComplaintForAssignment?.Id || null}
+                  onBack={() => setAssignmentMode(null)}
+                  onCreated={async () => {
+                    await refreshDashboardData();
+                    setShowCreateCommittee(false);
+                    setSelectedComplaintForAssignment(null);
+                    setAssignmentMode(null);
+                  }}
+                />
+              ) : (
+                <div style={{ backgroundColor: '#ffffff', borderRadius: '12px', padding: '20px', border: '1px solid #e2e8f0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                    <button
+                      onClick={() => setAssignmentMode(null)}
+                      style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#6b7280' }}
+                    >
+                      ←
+                    </button>
+                    <h3 style={{ margin: 0, color: '#1f2937', fontSize: '22px' }}>Active Committees</h3>
+                    <div style={{ width: '24px' }} />
+                  </div>
+
+                  <p style={{ marginTop: 0, color: '#64748b', marginBottom: '16px' }}>
+                    Select an active committee to assign complaint #{selectedComplaintForAssignment?.Id}.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {uniqueActiveCommittees.length === 0 ? (
+                      <div style={{ padding: '16px', borderRadius: '10px', backgroundColor: '#f8fafc', color: '#475569' }}>
+                        No active committees available.
+                      </div>
+                    ) : (
+                      uniqueActiveCommittees.map((panel) => (
+                        <div key={`assign-panel-${panel.Id}`} style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '12px', backgroundColor: '#fff' }}>
+                          <div style={{ fontWeight: '700', color: '#0f172a', marginBottom: '6px' }}>
+                            {panel.PanelName || `Committee #${panel.Id}`}
+                          </div>
+                          <div style={{ fontSize: '13px', color: '#64748b', marginBottom: '10px' }}>
+                            Status: {panel.Status || 'active'}
+                          </div>
+                          <button
+                            onClick={async () => {
+                              try {
+                                await assignComplaintToPanel({
+                                  panelId: panel.Id,
+                                  complaintId: selectedComplaintForAssignment.Id,
+                                  presidentCnic: user.cnic,
+                                });
+                                await refreshDashboardData();
+                                setShowCreateCommittee(false);
+                                setSelectedComplaintForAssignment(null);
+                                setAssignmentMode(null);
+                                alert('Complaint assigned to active committee successfully.');
+                              } catch (err) {
+                                alert('Failed to assign complaint: ' + err.message);
+                              }
+                            }}
+                            style={{
+                              padding: '10px 12px',
+                              border: 'none',
+                              borderRadius: '8px',
+                              backgroundColor: '#0f766e',
+                              color: 'white',
+                              fontSize: '14px',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Assign Here
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFinalReview && selectedComplaintForReview && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1200,
+            padding: '20px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowFinalReview(false);
+              setSelectedComplaintForReview(null);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+              width: '100%',
+              maxWidth: '760px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: '18px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+                <button
+                  onClick={() => {
+                    setShowFinalReview(false);
+                    setSelectedComplaintForReview(null);
+                  }}
+                  style={{ background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#6b7280' }}
+                >
+                  ✕
+                </button>
+              </div>
+              <CommitteeMeetingScreen
+                committee={selectedComplaintForReview}
+                user={user}
+                allowPresidentReview={true}
+                onBack={() => {
+                  setShowFinalReview(false);
+                  setSelectedComplaintForReview(null);
+                }}
+                onSaved={async () => {
+                  await refreshDashboardData();
+                  setShowFinalReview(false);
+                  setSelectedComplaintForReview(null);
+                }}
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -8,9 +8,9 @@ const ElectionInfo = ({ user, onBack }) => {
   useEffect(() => {
     const fetchElections = async () => {
       try {
-        const data = await getElections();
-        const userElection = data.find(e => e.NHCName === user.nhcCode);
-        setElections(userElection ? [userElection] : []);
+        // Fetch elections for this specific NHC only
+        const data = await getElections(user.nhcId);
+        setElections(data || []);
       } catch (error) {
         console.error('Error fetching elections:', error);
       } finally {
@@ -18,7 +18,7 @@ const ElectionInfo = ({ user, onBack }) => {
       }
     };
     fetchElections();
-  }, [user.nhcCode]);
+  }, [user.nhcId]);
 
   return (
     <div style={{
