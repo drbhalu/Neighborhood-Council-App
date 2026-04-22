@@ -43,12 +43,12 @@ function App() {
       // prepare nhc choices for members who belong to more than one council
       let options = [];
       if (userData.nhcCodes && Array.isArray(userData.nhcCodes)) {
-        options = [...userData.nhcCodes];
-      } else if (userData.nhcCode && typeof userData.nhcCode === 'string') {
+        options = userData.nhcCodes.filter(code => code && code.trim() && code !== 'No NHC Found');
+      } else if (userData.nhcCode && typeof userData.nhcCode === 'string' && userData.nhcCode !== 'No NHC Found') {
         options = userData.nhcCode
           .split(',')
           .map(s => s.trim())
-          .filter(Boolean);
+          .filter(code => code && code !== 'No NHC Found');
       }
 
       const member = { ...userData, nhcOptions: options };
@@ -67,9 +67,9 @@ function App() {
           let nhcId = null;
           try {
             const nhcListData = await getNHCList();
-            const nhcRecord = (nhcListData || []).find(n => n.Name === options[0] || n.Code === options[0]);
+            const nhcRecord = (nhcListData || []).find(n => n.name === options[0] || n.Name === options[0]);
             if (nhcRecord) {
-              nhcId = nhcRecord.Id;
+              nhcId = nhcRecord.id || nhcRecord.Id;
             }
           } catch (nhcErr) {
             console.error('Error fetching NHC ID:', nhcErr);
@@ -225,9 +225,9 @@ function App() {
               let nhcIdForCode = null;
               try {
                 const nhcListData = await getNHCList();
-                const nhcRecord = (nhcListData || []).find(n => n.Name === code || n.Code === code);
+                const nhcRecord = (nhcListData || []).find(n => n.name === code || n.Name === code);
                 if (nhcRecord) {
-                  nhcIdForCode = nhcRecord.Id;
+                  nhcIdForCode = nhcRecord.id || nhcRecord.Id;
                 }
               } catch (nhcErr) {
                 console.error('Error fetching NHC list to get ID:', nhcErr);

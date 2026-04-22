@@ -1482,7 +1482,9 @@ app.post('/api/login', async (req, res) => {
         const cRes = await pool.request()
           .input('CNIC', sql.NVarChar, user.CNIC)
           .query('SELECT NHC_Code FROM UserNHCs WHERE UserCNIC = @CNIC');
-        codes = cRes.recordset.map(r => r.NHC_Code);
+        codes = cRes.recordset
+          .map(r => r.NHC_Code)
+          .filter(code => code && code.trim() && code !== 'No NHC Found');  // Filter out null, empty, and "No NHC Found"
       } catch(e) {
         console.error('Error fetching codes for', user.CNIC, e);
       }
@@ -1812,6 +1814,26 @@ app.post('/api/complaint', complaintUpload.fields([
 
     if (!effectiveNhcCode) {
       return res.status(400).json({ error: 'NHC not found for user. Please re-login and try again.' });
+    }
+    
+    // Check if NHC has a panel assigned
+    const nhcIdRes = await pool.request()
+      .input('NHC_Code', sql.NVarChar, effectiveNhcCode)
+      .query('SELECT Id FROM NHC_Zones WHERE Name = @NHC_Code');
+    
+    if (nhcIdRes.recordset.length === 0) {
+      return res.status(400).json({ error: 'NHC not found' });
+    }
+    
+    const nhcId = nhcIdRes.recordset[0].Id;
+    
+    // Verify that NHC has at least one panel
+    const panelRes = await pool.request()
+      .input('NHC_Id', sql.Int, nhcId)
+      .query('SELECT TOP 1 Id FROM Panels WHERE NHC_Id = @NHC_Id');
+    
+    if (!panelRes.recordset || panelRes.recordset.length === 0) {
+      return res.status(403).json({ error: 'No panel has been assigned to your NHC yet. Complaints cannot be filed until a panel is set up. Please contact your NHC administrator.' });
     }
     
     // Insert complaint into database

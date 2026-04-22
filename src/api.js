@@ -327,6 +327,16 @@ export const getPanels = async (filters = {}) => {
   return response.json();
 };
 
+export const checkNHCHasPanel = async (nhcId) => {
+  try {
+    const panels = await getPanels({ nhcId });
+    return Array.isArray(panels) && panels.length > 0;
+  } catch (err) {
+    console.error('Error checking for panels:', err);
+    return false;
+  }
+};
+
 export const getPanelMembers = async (panelId) => {
   const response = await fetch(`${API_URL}/panels/${panelId}/members`);
   if (!response.ok) {

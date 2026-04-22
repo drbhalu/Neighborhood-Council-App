@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getNHCMembersByCode, submitComplaint } from '../api';
+import { getNHCMembersByCode, submitComplaint, checkNHCHasPanel } from '../api';
 
 const FileComplaint = ({ user, onClose, onSuccess }) => {
   const [category, setCategory] = useState('');
@@ -12,6 +12,30 @@ const FileComplaint = ({ user, onClose, onSuccess }) => {
   const [photoPreviews, setPhotoPreviews] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [nhcHasPanel, setNhcHasPanel] = useState(null);
+  const [checkingPanel, setCheckingPanel] = useState(true);
+
+  // Check if NHC has an assigned panel
+  useEffect(() => {
+    const checkPanel = async () => {
+      // Check if nhcId is valid (must be a positive number)
+      if (typeof user?.nhcId !== 'number' || user.nhcId <= 0) {
+        setNhcHasPanel(false);
+        setCheckingPanel(false);
+        return;
+      }
+      try {
+        const hasPanel = await checkNHCHasPanel(user.nhcId);
+        setNhcHasPanel(hasPanel);
+      } catch (err) {
+        console.error('Error checking panel:', err);
+        setNhcHasPanel(false);
+      } finally {
+        setCheckingPanel(false);
+      }
+    };
+    checkPanel();
+  }, [user?.nhcId]);
 
   useEffect(() => {
     const loadMembers = async () => {
@@ -143,6 +167,37 @@ const FileComplaint = ({ user, onClose, onSuccess }) => {
             ✕
           </button>
         </div>
+
+        {/* PANEL CHECK MESSAGE */}
+        {checkingPanel ? (
+          <div style={{
+            backgroundColor: '#fef3c7',
+            color: '#92400e',
+            padding: '16px',
+            borderRadius: '8px',
+            marginBottom: '16px',
+            textAlign: 'center',
+            fontSize: '14px'
+          }}>
+            ⏳ Checking if complaint feature is available...
+          </div>
+        ) : !nhcHasPanel ? (
+          <div style={{
+            backgroundColor: '#fee2e2',
+            color: '#7f1d1d',
+            padding: '16px',
+            borderRadius: '8px',
+            marginBottom: '16px',
+            textAlign: 'center',
+            fontSize: '14px',
+            fontWeight: 'bold',
+            border: '2px solid #fca5a5'
+          }}>
+            ❌ No panel assigned to your NHC yet.<br />
+            Complaints can only be filed when a panel is assigned.<br />
+            Please contact your NHC administrator.
+          </div>
+        ) : null}
 
         {/* USER INFO */}
         <div style={{
@@ -407,27 +462,27 @@ const FileComplaint = ({ user, onClose, onSuccess }) => {
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !nhcHasPanel || checkingPanel}
               style={{
                 flex: 1,
                 padding: '12px 20px',
-                backgroundColor: isSubmitting ? '#d1d5db' : '#0ea5e9',
+                backgroundColor: isSubmitting || !nhcHasPanel || checkingPanel ? '#d1d5db' : '#0ea5e9',
                 color: 'white',
                 border: 'none',
                 borderRadius: '8px',
                 fontSize: '16px',
                 fontWeight: 'bold',
-                cursor: isSubmitting ? 'not-allowed' : 'pointer',
+                cursor: isSubmitting || !nhcHasPanel || checkingPanel ? 'not-allowed' : 'pointer',
                 transition: 'all 0.3s ease'
               }}
               onMouseEnter={(e) => {
-                if (!isSubmitting) e.target.style.backgroundColor = '#0284c7';
+                if (!isSubmitting && nhcHasPanel && !checkingPanel) e.target.style.backgroundColor = '#0284c7';
               }}
               onMouseLeave={(e) => {
-                if (!isSubmitting) e.target.style.backgroundColor = '#0ea5e9';
+                if (!isSubmitting && nhcHasPanel && !checkingPanel) e.target.style.backgroundColor = '#0ea5e9';
               }}
             >
-              {isSubmitting ? '⏳ Submitting...' : 'Submit Complaint'}
+              {checkingPanel ? '⏳ Checking...' : isSubmitting ? '⏳ Submitting...' : 'Submit Complaint'}
             </button>
           </div>
         </form>

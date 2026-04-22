@@ -805,6 +805,24 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
                           cursor: 'pointer',
                         }}
                       >
+                        Add Meeting Decisions
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          alert('Call Meeting feature will be available here soon.');
+                        }}
+                        style={{
+                          padding: '8px 10px',
+                          border: 'none',
+                          borderRadius: '8px',
+                          backgroundColor: '#f59e0b',
+                          color: 'white',
+                          fontSize: '13px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
                         Call Meeting
                       </button>
 

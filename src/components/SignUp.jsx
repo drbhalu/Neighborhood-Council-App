@@ -112,7 +112,7 @@ const SignUp = ({ onSwitchToLogin, onSignupSuccess, nhcList }) => {
             setFormData({ ...formData, location: locationAddress, nhcCode: foundNHC });
             alert(`Found NHC: ${foundNHC}\nLocation: ${locationAddress}`);
           } else {
-            setFormData({ ...formData, location: locationAddress, nhcCode: "No NHC Found" });
+            setFormData({ ...formData, location: locationAddress, nhcCode: '' });
             alert("No NHC Found in this area.\nLocation: " + locationAddress);
           }
         },

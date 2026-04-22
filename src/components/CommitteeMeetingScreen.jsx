@@ -112,6 +112,17 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
 
     try {
       setSaving(true);
+      console.log('Saving meeting decision with:', {
+        complaintId,
+        remarks: remarks?.trim(),
+        status: isPresident && allowPresidentReview && decision === 'solved' ? 'Resolved' : mapDecisionToStatus(decision),
+        decision,
+        minutesFile,
+        actorCnic: user?.cnic,
+        budgetAmount: decision === 'budget' ? budgetAmount.trim() : '',
+        budgetReason: decision === 'budget' ? budgetReason.trim() : '',
+        moreWorkNeeded: decision === 'inprogress' ? moreWorkNeeded.trim() : '',
+      });
       await saveCommitteeMeetingDecision({
         complaintId,
         remarks: remarks?.trim(),
@@ -130,6 +141,7 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
       } catch (_) {}
       if (typeof onSaved === 'function') onSaved();
     } catch (err) {
+      console.error('Error saving meeting decision:', err);
       alert('Failed to save meeting decision: ' + err.message);
     } finally {
       setSaving(false);
