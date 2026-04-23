@@ -29,6 +29,7 @@ const PresidentDashboard = ({ user, onClose }) => {
     const normalized = normalizeStatus(status);
     if (normalized === 'resolved') return '#10b981';
     if (normalized === 'in-progress') return '#f59e0b';
+    if (normalized === 'pending-president-review') return '#f59e0b';
     if (normalized === 'pending') return '#ef4444';
     return '#6b7280';
   };
@@ -37,6 +38,7 @@ const PresidentDashboard = ({ user, onClose }) => {
     const normalized = normalizeStatus(status);
     if (normalized === 'in-progress') return 'In-Progress';
     if (normalized === 'resolved') return 'Resolved';
+    if (normalized === 'pending-president-review') return 'Pending Review';
     if (normalized === 'pending') return 'Pending';
     return status || 'Pending';
   };
@@ -48,7 +50,14 @@ const PresidentDashboard = ({ user, onClose }) => {
         getComplaintsByNHC(user.nhcCode),
         getPanels(user.nhcId ? { nhcId: user.nhcId } : { cnic: user.cnic }),
       ]);
-      setComplaints(complaintsData || []);
+      // Deduplicate complaints by ID to prevent showing the same complaint multiple times
+      const uniqueComplaints = (complaintsData || []).reduce((acc, complaint) => {
+        if (!acc.some(c => c.Id === complaint.Id)) {
+          acc.push(complaint);
+        }
+        return acc;
+      }, []);
+      setComplaints(uniqueComplaints);
       setPanels(panelsData || []);
       setError('');
     } catch (err) {
@@ -93,7 +102,7 @@ const PresidentDashboard = ({ user, onClose }) => {
   const resolvedComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'resolved').length;
   const finalResolutionRequests = complaints.filter((c) => {
     const status = normalizeStatus(c.Status);
-    return status === 'in-progress' && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
+    return ['in-progress', 'pending-president-review'].includes(status) && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
   }).length;
 
   // Filter complaints based on selected category
@@ -110,7 +119,7 @@ const PresidentDashboard = ({ user, onClose }) => {
       case 'final-review':
         return complaints.filter((c) => {
           const status = normalizeStatus(c.Status);
-          return status === 'in-progress' && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
+          return ['in-progress', 'pending-president-review'].includes(status) && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
         });
       default:
         return [];
@@ -762,14 +771,15 @@ const PresidentDashboard = ({ user, onClose }) => {
           </div>
         )}
 
+        {/* FINAL REVIEW VIEW */}
         {!loading && selectedCategory === 'final-review' && (
           <div>
             {renderComplaintList(getFilteredComplaints(), 'No complaints are waiting for final resolution.')}
           </div>
         )}
 
-        {/* COMPLAINT DETAILS VIEW */}
-        {!loading && selectedCategory && (
+        {/* OTHER CATEGORY VIEWS */}
+        {!loading && selectedCategory && selectedCategory !== 'final-review' && (
           <div>
             {renderComplaintList(getFilteredComplaints(), 'No complaints found in this category.')}
           </div>

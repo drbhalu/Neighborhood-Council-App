@@ -346,6 +346,35 @@ export const getPanelMembers = async (panelId) => {
   return response.json();
 };
 
+export const scheduleCommitteeMeeting = async ({ panelId, meetingDate, meetingTime, reason, scheduledByCnic }) => {
+  const url = `${API_URL}/panels/${panelId}/schedule-meeting`;
+  console.log('🔵 API request URL:', url);
+  console.log('🔵 API request payload:', { panelId, meetingDate, meetingTime, reason, scheduledByCnic });
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ meetingDate, meetingTime, reason, scheduledByCnic }),
+  });
+  console.log('✓ API response status:', response.status);
+  
+  if (!response.ok) {
+    let errorText = await response.text();
+    console.error('❌ API error response text:', errorText);
+    try {
+      const err = JSON.parse(errorText);
+      throw new Error(err.error || 'Failed to schedule committee meeting');
+    } catch (parseErr) {
+      if (parseErr.message.includes('Failed to schedule')) throw parseErr;
+      console.error('❌ Could not parse error response as JSON');
+      throw new Error('Failed to schedule committee meeting');
+    }
+  }
+  const result = await response.json();
+  console.log('✓ API response data:', result);
+  return result;
+};
+
 export const assignComplaintToPanel = async ({ panelId, complaintId, presidentCnic }) => {
   const response = await fetch(`${API_URL}/panels/${panelId}/complaints`, {
     method: 'POST',

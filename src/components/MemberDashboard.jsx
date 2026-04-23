@@ -10,6 +10,7 @@ import SelfNominationForm from './SelfNominationForm';
 import ElectionVoting from './ElectionVoting';
 import ElectionResults from './ElectionResults';
 import PastElectionResults from './PastElectionResults';
+import CallMeetingModal from './CallMeetingModal';
 import FileComplaint from './FileComplaint'; // NEW: Added Import
 import MyComplaints from './MyComplaints';
 import PresidentDashboard from './PresidentDashboard'; // NEW: Added Import
@@ -36,7 +37,10 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const [complaintStatsLoading, setComplaintStatsLoading] = useState(false);
   const [memberCommittees, setMemberCommittees] = useState([]);
   const [selectedCommittee, setSelectedCommittee] = useState(null);
+  const [selectedCommitteeId, setSelectedCommitteeId] = useState(null);
   const [selectedCommitteeName, setSelectedCommitteeName] = useState('');
+  const [showCallMeeting, setShowCallMeeting] = useState(false);
+  const [selectedCommitteeForMeeting, setSelectedCommitteeForMeeting] = useState(null);
 
   // Check if user has multiple NHCs
   const hasMultipleNHCs = user && user.nhcOptions && user.nhcOptions.length > 1;
@@ -46,22 +50,52 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const hasCommitteeMembership = memberCommittees.length > 0;
   const committeeBackView = isPresident ? 'list' : 'complaints';
 
+  const fetchMyCommittees = async () => {
+    try {
+      const data = await getPanels({
+        cnic: currentUser.cnic,
+        committeeOnly: true,
+        nhcId: currentUser.nhcId,
+      });
+      setMemberCommittees(data || []);
+    } catch (err) {
+      console.error('Error fetching user committees:', err);
+      setMemberCommittees([]);
+    }
+  };
+
   const committeeGroups = Object.values(
     memberCommittees.reduce((acc, committee) => {
-      const committeeName = committee.PanelName || `Committee #${committee.Id}`;
-      if (!acc[committeeName]) {
-        acc[committeeName] = {
+      const panelId = committee.Id;
+      const committeeName = committee.PanelName || `Committee #${panelId}`;
+      if (!acc[panelId]) {
+        acc[panelId] = {
+          id: panelId,
           name: committeeName,
+          status: committee.Status,
+          memberCount: Number(committee.MemberCount || 0),
           complaints: [],
         };
       }
 
       if (committee.ComplaintId) {
-        const alreadyAdded = acc[committeeName].complaints.some(
+        const alreadyAdded = acc[panelId].complaints.some(
           (item) => String(item.ComplaintId) === String(committee.ComplaintId)
         );
         if (!alreadyAdded) {
-          acc[committeeName].complaints.push(committee);
+          acc[panelId].complaints.push({
+            Id: committee.Id,
+            ComplaintId: committee.ComplaintId,
+            ComplaintCategory: committee.ComplaintCategory,
+            ComplaintDescription: committee.ComplaintDescription,
+            ComplaintStatus: committee.ComplaintStatus || committee.Status,
+            ComplaintUserName: committee.ComplaintUserName,
+            ComplaintUserCNIC: committee.ComplaintUserCNIC,
+            UserName: committee.UserName,
+            UserCNIC: committee.UserCNIC,
+            ComplaintType: committee.ComplaintType,
+            PanelName: committeeName,
+          });
         }
       }
 
@@ -69,9 +103,10 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
     }, {})
   );
 
-  const selectedCommitteeComplaints = memberCommittees.filter((committee) => {
-    const committeeName = committee.PanelName || `Committee #${committee.Id}`;
-    return committeeName === selectedCommitteeName && committee.ComplaintId;
+  const selectedCommitteeComplaints = committeeGroups.find((group) => group.id === selectedCommitteeId)?.complaints || [];
+  const activeCommitteeComplaints = selectedCommitteeComplaints.filter((complaint) => {
+    const status = String(complaint.ComplaintStatus || complaint.Status || '').trim().toLowerCase();
+    return status !== 'resolved';
   });
 
   // Verify NHC-specific role whenever NHC code changes
@@ -95,20 +130,6 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   }, [currentUser.nhcCode]); // Re-verify whenever nhcCode changes
 
   useEffect(() => {
-    const fetchMyCommittees = async () => {
-      try {
-        const data = await getPanels({ 
-          cnic: currentUser.cnic, 
-          committeeOnly: true,
-          nhcId: currentUser.nhcId // Filter by current NHC
-        });
-        setMemberCommittees(data || []);
-      } catch (err) {
-        console.error('Error fetching user committees:', err);
-        setMemberCommittees([]);
-      }
-    };
-
     if (currentUser?.cnic) {
       fetchMyCommittees();
     }
@@ -554,8 +575,10 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
                 user={currentUser}
                 onCreateNewCommittee={() => setCommitteeView('create')}
                 onOpenCommittee={(committee) => {
-                  setSelectedCommittee(committee);
-                  setCommitteeView('detail');
+                  setSelectedCommitteeId(committee.Id);
+                  setSelectedCommitteeName(committee.panelName || committee.PanelName || `Committee #${committee.Id}`);
+                  setSelectedCommittee(null);
+                  setCommitteeView('complaints');
                 }}
               />
             </div>
@@ -664,7 +687,9 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                       <button
                         onClick={() => {
+                          setSelectedCommitteeId(group.id);
                           setSelectedCommitteeName(group.name);
+                          setSelectedCommittee(null);
                           setCommitteeView('complaints');
                         }}
                         style={{
@@ -732,7 +757,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
               }}
             >
               <button
-                onClick={() => setCommitteeView('names')}
+                onClick={() => setCommitteeView(isPresident ? 'list' : 'names')}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -753,7 +778,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
             </p>
 
             <div style={{ padding: '0 24px 24px 24px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {selectedCommitteeComplaints.length === 0 ? (
+              {activeCommitteeComplaints.length === 0 ? (
                 <div
                   style={{
                     padding: '20px',
@@ -763,10 +788,10 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
                     textAlign: 'center',
                   }}
                 >
-                  No complaints assigned to this committee.
+                  No active complaints assigned to this committee.
                 </div>
               ) : (
-                selectedCommitteeComplaints.map((committee) => (
+                activeCommitteeComplaints.map((committee) => (
                   <div
                     key={`committee-complaint-${committee.Id}-${committee.ComplaintId}`}
                     style={{
@@ -810,7 +835,8 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
 
                       <button
                         onClick={() => {
-                          alert('Call Meeting feature will be available here soon.');
+                          setSelectedCommitteeForMeeting(committee);
+                          setShowCallMeeting(true);
                         }}
                         style={{
                           padding: '8px 10px',
@@ -993,7 +1019,10 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
               committee={selectedCommittee}
               user={currentUser}
               onBack={() => setCommitteeView(committeeBackView)}
-              onSaved={() => setCommitteeView(committeeBackView)}
+              onSaved={async () => {
+                await fetchMyCommittees();
+                setCommitteeView(committeeBackView);
+              }}
             />
           </div>
         </div>
@@ -1169,6 +1198,17 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
           onBack={() => {
             setSelectedElectionOption(null);
             setShowElectionsMenu(true);
+          }}
+        />
+      )}
+
+      {showCallMeeting && selectedCommitteeForMeeting && (
+        <CallMeetingModal
+          committee={selectedCommitteeForMeeting}
+          user={currentUser}
+          onClose={() => {
+            setShowCallMeeting(false);
+            setSelectedCommitteeForMeeting(null);
           }}
         />
       )}

@@ -794,6 +794,53 @@ async function initDB() {
     `);
     console.log("✓ Table Suggestions ready.");
 
+    // === PRESIDENT APPROVAL FEATURE - NEW COLUMNS ===
+    // Add new columns to Complaints table for president approval tracking
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'PresidentApprovalStatus' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD PresidentApprovalStatus NVARCHAR(50) DEFAULT 'pending';
+    `);
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'PresidentApprovalComments' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD PresidentApprovalComments NVARCHAR(MAX) NULL;
+    `);
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'PresidentApprovingCNIC' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD PresidentApprovingCNIC NVARCHAR(20) NULL;
+    `);
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'ApprovedDate' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD ApprovedDate DATETIME NULL;
+    `);
+    console.log("✓ Complaints table: President approval columns added.");
+
+    // Add new columns to Panels table for tracking completion
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'CompletedDate' AND Object_ID = OBJECT_ID('Panels'))
+      ALTER TABLE Panels ADD CompletedDate DATETIME NULL;
+    `);
+    console.log("✓ Panels table: CompletedDate column added.");
+
+    // === PANEL COMPLAINT HISTORY TABLE ===
+    // Tracks history of panel assignments for auditing and statistics
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PanelComplaintHistory' AND xtype='U')
+      CREATE TABLE PanelComplaintHistory (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        PanelId INT NOT NULL,
+        ComplaintId INT NOT NULL,
+        AssignedDate DATETIME,
+        CompletedDate DATETIME NULL,
+        CompletionStatus NVARCHAR(50) NULL,
+        PresidentComments NVARCHAR(MAX) NULL,
+        PresidentCNIC NVARCHAR(20) NULL,
+        CreatedDate DATETIME DEFAULT GETDATE(),
+        FOREIGN KEY (PanelId) REFERENCES Panels(Id),
+        FOREIGN KEY (ComplaintId) REFERENCES Complaints(Id)
+      )
+    `);
+    console.log("✓ Table PanelComplaintHistory created.");
+
     console.log("✓ All tables initialized successfully.");
     await nhcPool.close();
 
@@ -1640,7 +1687,77 @@ app.post('/api/notification', async (req, res) => {
   }
 });
 
-// 9. GET NOTIFICATIONS (For User Dashboard)
+// 9. SCHEDULE COMMITTEE MEETING / SEND NOTIFICATIONS
+app.post('/api/panels/:id/schedule-meeting', async (req, res) => {
+  const panelId = parseInt(req.params.id, 10);
+  const { meetingDate, meetingTime, reason, scheduledByCnic } = req.body;
+
+  console.log('🔵 Schedule meeting request:', { panelId, meetingDate, meetingTime, reason, scheduledByCnic });
+
+  if (!panelId || !meetingDate || !meetingTime || !reason || !scheduledByCnic) {
+    console.error('❌ Missing required fields:', { panelId, meetingDate, meetingTime, reason, scheduledByCnic });
+    return res.status(400).json({ error: 'panel id, meeting date, time, reason, and scheduledByCnic are required' });
+  }
+
+  let pool;
+  try {
+    pool = await sql.connect(dbConfig);
+
+    const panelRes = await pool.request()
+      .input('PanelId', sql.Int, panelId)
+      .query('SELECT Id, PanelName FROM Panels WHERE Id = @PanelId');
+
+    console.log('✓ Panel query result:', panelRes.recordset);
+
+    if (panelRes.recordset.length === 0) {
+      console.error('❌ Committee not found with ID:', panelId);
+      return res.status(404).json({ error: 'Committee not found' });
+    }
+
+    const panelName = panelRes.recordset[0].PanelName || `Committee ${panelId}`;
+
+    const membersRes = await pool.request()
+      .input('PanelId', sql.Int, panelId)
+      .query('SELECT CNIC FROM PanelMembers WHERE PanelId = @PanelId');
+
+    console.log('✓ Members query result:', membersRes.recordset);
+
+    if (membersRes.recordset.length === 0) {
+      console.error('❌ No committee members found for panel:', panelId);
+      return res.status(404).json({ error: 'Committee members not found' });
+    }
+
+    const message = `Meeting called for ${panelName} on ${meetingDate} at ${meetingTime}. Reason: ${reason}`;
+
+    console.log('✓ Notification message:', message);
+    console.log('✓ Sending notifications to', membersRes.recordset.length, 'members');
+
+    let notifySent = 0;
+    for (const member of membersRes.recordset) {
+      try {
+        await pool.request()
+          .input('RecipientCNIC', sql.NVarChar, member.CNIC)
+          .input('Message', sql.NVarChar(sql.MAX), message)
+          .input('PanelId', sql.Int, panelId)
+          .query('INSERT INTO Notifications (RecipientCNIC, Message, PanelId) VALUES (@RecipientCNIC, @Message, @PanelId)');
+        notifySent++;
+        console.log('✓ Notification sent to', member.CNIC);
+      } catch (notifyErr) {
+        console.error('❌ Notification insert failed for', member.CNIC, notifyErr);
+      }
+    }
+
+    console.log('✓ Successfully sent', notifySent, 'notifications');
+    res.status(200).json({ message: 'Meeting scheduled and notifications sent successfully.', notificationsSent: notifySent });
+  } catch (err) {
+    console.error('❌ Schedule committee meeting error:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// 10. GET NOTIFICATIONS (For User Dashboard)
 app.get('/api/notifications', async (req, res) => {
   const { cnic } = req.query;
   let pool;
@@ -2229,9 +2346,16 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
     }
     const mergedRemarks = detailsParts.join('\n\n');
 
-    const normalizedStatus = actorRole === 'president' && String(status || '').toLowerCase() === 'resolved'
+    const cleanedStatus = String(status || '').trim();
+    const normalizedStatus = actorRole === 'president' && cleanedStatus.toLowerCase() === 'resolved'
       ? 'Resolved'
-      : 'In-Progress';
+      : cleanedStatus.toLowerCase() === 'pending president review'
+        ? 'Pending President Review'
+        : 'In-Progress';
+
+    const presidentApprovalStatus = actorRole !== 'president' && normalizedStatus === 'Pending President Review'
+      ? 'pending'
+      : null;
 
     await pool.request()
       .input('Id', sql.Int, complaintId)
@@ -2239,6 +2363,7 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
       .input('MeetingDecision', sql.NVarChar(100), decision || null)
       .input('MeetingMinutesPath', sql.NVarChar(sql.MAX), minutesPath)
       .input('Status', sql.NVarChar(50), normalizedStatus)
+      .input('PresidentApprovalStatus', sql.NVarChar(50), presidentApprovalStatus)
       .query(`
         UPDATE Complaints
         SET CommitteeRemarks = @CommitteeRemarks,
@@ -2246,6 +2371,7 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
             MeetingMinutesPath = @MeetingMinutesPath,
             MeetingDate = GETDATE(),
             Status = @Status,
+            PresidentApprovalStatus = COALESCE(@PresidentApprovalStatus, PresidentApprovalStatus),
             UpdatedDate = GETDATE()
         WHERE Id = @Id
       `);
@@ -2291,6 +2417,11 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
             .input('Message', sql.NVarChar(sql.MAX), solvedMessage)
             .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
         }
+      } else if (normalizedStatus === 'Pending President Review') {
+        await pool.request()
+          .input('RecipientCNIC', sql.NVarChar, owner.UserCNIC)
+          .input('Message', sql.NVarChar(sql.MAX), `Committee recommended resolution for your complaint (${owner.Category || 'Complaint'}). It is now pending president review.`)
+          .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
       } else {
         await pool.request()
           .input('RecipientCNIC', sql.NVarChar, owner.UserCNIC)
@@ -2309,6 +2440,235 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
     });
   } catch (err) {
     console.error('Error saving committee meeting details:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// ==================== PRESIDENT APPROVAL ROUTES ====================
+
+// PUT: President Approval - Approve, Reject, or Request Changes
+app.put('/api/complaints/:id/president-approval', async (req, res) => {
+  let pool;
+  try {
+    const complaintId = parseInt(req.params.id, 10);
+    const { action, presidentCnic, presidentComments } = req.body;
+
+    if (!complaintId) {
+      return res.status(400).json({ error: 'Valid complaint id is required' });
+    }
+
+    if (!action || !['approve', 'reject', 'request-changes'].includes(action)) {
+      return res.status(400).json({ error: 'Valid action required: approve, reject, or request-changes' });
+    }
+
+    if (!presidentCnic) {
+      return res.status(400).json({ error: 'President CNIC is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    // Verify president exists
+    const presidentRes = await pool.request()
+      .input('CNIC', sql.NVarChar, presidentCnic)
+      .query('SELECT Role FROM Users WHERE CNIC = @CNIC');
+
+    if (presidentRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'President user not found' });
+    }
+
+    // Verify complaint exists
+    const complaintRes = await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .query('SELECT Id, UserCNIC, Category, Status FROM Complaints WHERE Id = @Id');
+
+    if (complaintRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const complaint = complaintRes.recordset[0];
+    let newStatus = complaint.Status;
+    let approvalStatus = 'pending';
+
+    // Determine new status and approval status based on action
+    if (action === 'approve') {
+      newStatus = 'Resolved';
+      approvalStatus = 'approved';
+    } else if (action === 'reject') {
+      approvalStatus = 'rejected';
+      newStatus = 'In-Progress'; // Back to committee
+    } else if (action === 'request-changes') {
+      approvalStatus = 'revision-requested';
+      newStatus = 'In-Progress'; // Back to committee
+    }
+
+    const approvedDate = action === 'approve' ? new Date() : null;
+
+    // Update complaint with president approval info
+    await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .input('PresidentApprovalStatus', sql.NVarChar, approvalStatus)
+      .input('PresidentApprovalComments', sql.NVarChar(sql.MAX), presidentComments || null)
+      .input('PresidentApprovingCNIC', sql.NVarChar, presidentCnic)
+      .input('ApprovedDate', sql.DateTime, approvedDate)
+      .input('Status', sql.NVarChar, newStatus)
+      .query(`
+        UPDATE Complaints
+        SET PresidentApprovalStatus = @PresidentApprovalStatus,
+            PresidentApprovalComments = @PresidentApprovalComments,
+            PresidentApprovingCNIC = @PresidentApprovingCNIC,
+            ApprovedDate = @ApprovedDate,
+            Status = @Status,
+            UpdatedDate = GETDATE()
+        WHERE Id = @Id
+      `);
+
+    // Log the approval action
+    await logComplaintActivity(pool, {
+      complaintId,
+      actorCnic: presidentCnic,
+      actorRole: 'president',
+      actionType: `president-${action.replace('-', '')}`,
+      remarksSnapshot: null,
+      decisionSnapshot: null,
+      minutesPathSnapshot: null,
+      resolutionPhotosSnapshot: null,
+      statusSnapshot: newStatus,
+    });
+
+    // If approved, complete the panel assignment
+    if (action === 'approve') {
+      const panelRes = await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .query(`
+          SELECT p.Id FROM Panels p
+          INNER JOIN PanelComplaints pc ON pc.PanelId = p.Id
+          WHERE pc.ComplaintId = @ComplaintId AND p.Status = 'active'
+        `);
+
+      for (const panel of panelRes.recordset) {
+        // Mark panel as completed
+        await pool.request()
+          .input('PanelId', sql.Int, panel.Id)
+          .query(`
+            UPDATE Panels
+            SET Status = 'completed', CompletedDate = GETDATE()
+            WHERE Id = @PanelId
+          `);
+
+        // Add to panel history
+        await pool.request()
+          .input('PanelId', sql.Int, panel.Id)
+          .input('ComplaintId', sql.Int, complaintId)
+          .input('CompletionStatus', sql.NVarChar, 'approved')
+          .input('PresidentComments', sql.NVarChar(sql.MAX), presidentComments || null)
+          .input('PresidentCNIC', sql.NVarChar, presidentCnic)
+          .query(`
+            INSERT INTO PanelComplaintHistory (
+              PanelId, ComplaintId, CompletedDate, CompletionStatus,
+              PresidentComments, PresidentCNIC, AssignedDate
+            ) VALUES (
+              @PanelId, @ComplaintId, GETDATE(), @CompletionStatus,
+              @PresidentComments, @PresidentCNIC, GETDATE()
+            )
+          `);
+      }
+    }
+
+    // Send notifications
+    try {
+      const messageMap = {
+        'approve': `✅ Your decision on Complaint #${complaintId} was APPROVED by the president. Complaint is now RESOLVED.`,
+        'reject': `❌ Your decision on Complaint #${complaintId} was REJECTED by the president. Feedback: ${presidentComments}`,
+        'request-changes': `📝 President requested changes for Complaint #${complaintId}. Feedback: ${presidentComments}`
+      };
+
+      // Notify committee
+      const panelRes = await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .query(`
+          SELECT DISTINCT pm.CNIC
+          FROM PanelMembers pm
+          INNER JOIN Panels p ON p.Id = pm.PanelId
+          INNER JOIN PanelComplaints pc ON pc.PanelId = p.Id
+          WHERE pc.ComplaintId = @ComplaintId
+        `);
+
+      for (const member of panelRes.recordset) {
+        await pool.request()
+          .input('RecipientCNIC', sql.NVarChar, member.CNIC)
+          .input('Message', sql.NVarChar(sql.MAX), messageMap[action])
+          .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+      }
+
+      // Notify complainant
+      if (action === 'approve') {
+        await pool.request()
+          .input('RecipientCNIC', sql.NVarChar, complaint.UserCNIC)
+          .input('Message', sql.NVarChar(sql.MAX), `✅ Your complaint has been RESOLVED by the president.`)
+          .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+      }
+    } catch (notifyErr) {
+      console.error('Failed to send notifications after president approval:', notifyErr);
+    }
+
+    res.json({
+      success: true,
+      message: `Complaint ${action} completed successfully`,
+      complaintId,
+      approvalStatus,
+      newStatus
+    });
+
+  } catch (err) {
+    console.error('Error processing president approval:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// GET: Panel Complaint History
+app.get('/api/panels/:panelId/history', async (req, res) => {
+  let pool;
+  try {
+    const panelId = parseInt(req.params.panelId, 10);
+
+    if (!panelId) {
+      return res.status(400).json({ error: 'Panel ID is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    const historyRes = await pool.request()
+      .input('PanelId', sql.Int, panelId)
+      .query(`
+        SELECT 
+          pch.Id,
+          pch.ComplaintId,
+          pch.AssignedDate,
+          pch.CompletedDate,
+          pch.CompletionStatus,
+          pch.PresidentComments,
+          pch.PresidentCNIC,
+          c.Category,
+          c.Description,
+          c.Status,
+          c.MeetingDecision
+        FROM PanelComplaintHistory pch
+        INNER JOIN Complaints c ON c.Id = pch.ComplaintId
+        WHERE pch.PanelId = @PanelId
+        ORDER BY pch.CompletedDate DESC
+      `);
+
+    res.json({
+      success: true,
+      history: historyRes.recordset || []
+    });
+
+  } catch (err) {
+    console.error('Error fetching panel history:', err);
     res.status(500).json({ error: err.message });
   } finally {
     if (pool) await pool.close();

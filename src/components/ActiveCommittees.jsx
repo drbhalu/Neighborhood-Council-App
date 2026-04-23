@@ -28,6 +28,34 @@ const ActiveCommittees = ({ user, onCreateNewCommittee, onOpenCommittee }) => {
   };
   const memberCommittees = panels || [];
 
+  const groupedCommittees = Object.values(
+    memberCommittees.reduce((acc, panel) => {
+      if (!acc[panel.Id]) {
+        acc[panel.Id] = {
+          ...panel,
+          complaints: [],
+          panelName: panel.PanelName || `Committee #${panel.Id}`,
+        };
+      }
+
+      const complaintId = panel.ComplaintId;
+      if (complaintId) {
+        const complaint = {
+          id: complaintId,
+          category: panel.ComplaintCategory || panel.ComplaintType || `Complaint #${complaintId}`,
+          description: panel.ComplaintDescription || panel.Description || '',
+          status: panel.ComplaintStatus || panel.Status || '',
+          userName: panel.ComplaintUserName || panel.UserName || panel.ComplaintUserCNIC || panel.UserCNIC || '',
+        };
+        if (!acc[panel.Id].complaints.some((c) => c.id === complaint.id)) {
+          acc[panel.Id].complaints.push(complaint);
+        }
+      }
+
+      return acc;
+    }, {})
+  );
+
   const getFormedDaysText = (createdDate) => {
     if (!createdDate) return 'Formed recently';
     const created = new Date(createdDate);
@@ -64,9 +92,9 @@ const ActiveCommittees = ({ user, onCreateNewCommittee, onOpenCommittee }) => {
 
   return (
     <div style={{ paddingBottom: '12px' }}>
-      {memberCommittees.length > 0 ? (
+      {groupedCommittees.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '18px' }}>
-          {memberCommittees.map((panel) => (
+          {groupedCommittees.map((panel) => (
             <div
               key={panel.Id}
               onClick={() => {
@@ -85,7 +113,7 @@ const ActiveCommittees = ({ user, onCreateNewCommittee, onOpenCommittee }) => {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
                 <div>
                   <h3 style={{ margin: '0 0 5px 0', color: '#0f172a', fontSize: '18px' }}>
-                    {panel.ComplaintCategory || panel.PanelName || 'Committee'}
+                    {panel.panelName}
                   </h3>
                   <p style={{ margin: 0, color: '#64748b', fontSize: '13px' }}>
                     {Number(panel.MemberCount || 0)} members | {getFormedDaysText(panel.CreatedDate)}
@@ -107,9 +135,11 @@ const ActiveCommittees = ({ user, onCreateNewCommittee, onOpenCommittee }) => {
                 </span>
               </div>
 
-              <p style={{ margin: '10px 0 0 0', color: '#334155', lineHeight: '1.45' }}>
-                {getComplaintText(panel)}
-              </p>
+              <div style={{ marginTop: '12px' }}>
+                <p style={{ margin: 0, color: '#334155', lineHeight: '1.45' }}>
+                  {panel.panelName}
+                </p>
+              </div>
             </div>
           ))}
         </div>

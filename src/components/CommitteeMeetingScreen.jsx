@@ -28,13 +28,15 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
   const statusLabel = committee?.ComplaintStatus || committee?.Status || 'In Progress';
 
   const mapDecisionToStatus = (value) => {
-    if (value === 'solved') return 'Resolved';
+    if (value === 'solved') {
+      return isPresident && allowPresidentReview ? 'Resolved' : 'Pending President Review';
+    }
     return 'In-Progress';
   };
 
   const decisionLabelMap = {
     budget: 'Budget Needed',
-    solved: 'Complaint Solved In Meeting',
+    solved: 'Recommend Resolution in Meeting',
     inprogress: 'Need More Work / Still In Progress',
   };
 
@@ -112,10 +114,11 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
 
     try {
       setSaving(true);
+      const requestStatus = mapDecisionToStatus(decision);
       console.log('Saving meeting decision with:', {
         complaintId,
         remarks: remarks?.trim(),
-        status: isPresident && allowPresidentReview && decision === 'solved' ? 'Resolved' : mapDecisionToStatus(decision),
+        status: requestStatus,
         decision,
         minutesFile,
         actorCnic: user?.cnic,
@@ -126,7 +129,7 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
       await saveCommitteeMeetingDecision({
         complaintId,
         remarks: remarks?.trim(),
-        status: isPresident && allowPresidentReview && decision === 'solved' ? 'Resolved' : mapDecisionToStatus(decision),
+        status: requestStatus,
         decision,
         minutesFile,
         actorCnic: user?.cnic,
@@ -134,7 +137,13 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
         budgetReason: decision === 'budget' ? budgetReason.trim() : '',
         moreWorkNeeded: decision === 'inprogress' ? moreWorkNeeded.trim() : '',
       });
-      alert(isPresident && allowPresidentReview ? 'Complaint finalized successfully.' : 'Meeting decision saved successfully.');
+      alert(
+        isPresident && allowPresidentReview
+          ? 'Complaint finalized successfully.'
+          : requestStatus === 'Pending President Review'
+            ? 'Meeting decision saved as a recommendation. It is now pending president review.'
+            : 'Meeting decision saved successfully.'
+      );
       try {
         const rows = await getComplaintHistory(complaintId, user.cnic);
         setHistory(rows || []);
@@ -337,6 +346,11 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
           />
           {decisionLabelMap.solved}
         </label>
+        {decision === 'solved' ? (
+          <p style={{ margin: '0 0 12px 28px', color: '#475569', fontSize: '13px', lineHeight: 1.5 }}>
+            This recommendation will be saved as pending president review unless you are a president finalizing the complaint.
+          </p>
+        ) : null}
         <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '15px', color: '#1f2937' }}>
           <input
             type="radio"
