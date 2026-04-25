@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { assignComplaintToPanel, getComplaintsByNHC, getPanels } from '../api';
 import AllSuggestions from './AllSuggestions'; // NEW: Import AllSuggestions
+import PresidentBudgetRequests from './PresidentBudgetRequests'; // NEW: Import PresidentBudgetRequests
 import CreateCommitteeScreen from './CreateCommitteeScreen';
 import CommitteeMeetingScreen from './CommitteeMeetingScreen';
 import logo from '../assets/logo.png';
@@ -11,6 +12,7 @@ const PresidentDashboard = ({ user, onClose }) => {
   const [error, setError] = useState('');
   const [selectedCategory, setSelectedCategory] = useState(null); // null = overview, 'total', 'open', 'in-progress', 'resolved'
   const [showSuggestions, setShowSuggestions] = useState(false); // NEW: State for showing suggestions
+  const [showBudgetApproval, setShowBudgetApproval] = useState(false); // NEW: State for showing budget approval
   const [panels, setPanels] = useState([]);
   const [showCreateCommittee, setShowCreateCommittee] = useState(false);
   const [selectedComplaintForAssignment, setSelectedComplaintForAssignment] = useState(null);
@@ -48,7 +50,7 @@ const PresidentDashboard = ({ user, onClose }) => {
       setLoading(true);
       const [complaintsData, panelsData] = await Promise.all([
         getComplaintsByNHC(user.nhcCode),
-        getPanels(user.nhcId ? { nhcId: user.nhcId } : { cnic: user.cnic }),
+        getPanels(user.nhcId ? { nhcId: user.nhcId, committeeOnly: true } : { cnic: user.cnic, committeeOnly: true }),
       ]);
       // Deduplicate complaints by ID to prevent showing the same complaint multiple times
       const uniqueComplaints = (complaintsData || []).reduce((acc, complaint) => {
@@ -85,9 +87,8 @@ const PresidentDashboard = ({ user, onClose }) => {
 
   const uniqueActiveCommittees = Object.values(
     (panels || []).reduce((acc, panel) => {
-      const status = String(panel.Status || '').toLowerCase();
-      const isActiveCommittee = status === 'active' || status === 'approved';
-      if (!isActiveCommittee) return acc;
+      const isCommittee = [1, '1', true, 'true'].includes(panel.IsCommittee);
+      if (!isCommittee) return acc;
       if (!acc[panel.Id]) {
         acc[panel.Id] = panel;
       }
@@ -96,14 +97,14 @@ const PresidentDashboard = ({ user, onClose }) => {
   );
 
   // Calculate statistics
-  const totalComplaints = complaints.length;
-  const pendingComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'pending').length;
-  const inProgressComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'in-progress').length;
-  const resolvedComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'resolved').length;
-  const finalResolutionRequests = complaints.filter((c) => {
-    const status = normalizeStatus(c.Status);
-    return ['in-progress', 'pending-president-review'].includes(status) && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
-  }).length;
+  // const totalComplaints = complaints.length;
+  // const pendingComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'pending').length;
+  // const inProgressComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'in-progress').length;
+  // const resolvedComplaints = complaints.filter(c => normalizeStatus(c.Status) === 'resolved').length;
+  // const finalResolutionRequests = complaints.filter((c) => {
+  //   const status = normalizeStatus(c.Status);
+  //   return ['in-progress', 'pending-president-review'].includes(status) && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
+  // }).length;
 
   // Filter complaints based on selected category
   const getFilteredComplaints = () => {
@@ -119,7 +120,12 @@ const PresidentDashboard = ({ user, onClose }) => {
       case 'final-review':
         return complaints.filter((c) => {
           const status = normalizeStatus(c.Status);
-          return ['in-progress', 'pending-president-review'].includes(status) && (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks);
+          const approvalStatus = String(c.PresidentApprovalStatus || '').toLowerCase();
+          const isBudgetRequest = ['1', 'true'].includes(String(c.HasBudget || '').toLowerCase());
+          return !isBudgetRequest &&
+                 ['in-progress', 'pending-president-review'].includes(status) && 
+                 (c.MeetingDecision || c.MeetingMinutesPath || c.CommitteeRemarks) &&
+                 approvalStatus !== 'approved';
         });
       default:
         return [];
@@ -310,7 +316,7 @@ const PresidentDashboard = ({ user, onClose }) => {
                     let paths = [];
                     try {
                       paths = complaint.PhotoPaths ? JSON.parse(complaint.PhotoPaths) : [];
-                    } catch (_) {
+                    } catch {
                       paths = [];
                     }
                     if ((!paths || paths.length === 0) && complaint.PhotoPath) {
@@ -519,6 +525,21 @@ const PresidentDashboard = ({ user, onClose }) => {
                 }}
               >
                 Suggestions
+              </button>
+              <button
+                onClick={() => setShowBudgetApproval(true)}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: '#dc2626',
+                  color: 'white',
+                  fontSize: '14px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
+                }}
+              >
+                Budget Approval
               </button>
               <button
                 onClick={() => handleCardClick('final-review')}
@@ -817,6 +838,54 @@ const PresidentDashboard = ({ user, onClose }) => {
         <AllSuggestions user={user} onClose={() => setShowSuggestions(false)} />
       )}
 
+      {/* NEW: Show Budget Approval */}
+      {showBudgetApproval && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 999,
+            padding: '20px',
+            overflowY: 'auto',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowBudgetApproval(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+              width: '100%',
+              maxWidth: '900px',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <PresidentBudgetRequests
+                user={user}
+                nhcCode={user.nhcCode}
+                onBack={() => setShowBudgetApproval(false)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCreateCommittee && (
         <div
           style={{
@@ -937,18 +1006,18 @@ const PresidentDashboard = ({ user, onClose }) => {
                     >
                       ←
                     </button>
-                    <h3 style={{ margin: 0, color: '#1f2937', fontSize: '22px' }}>Active Committees</h3>
+                    <h3 style={{ margin: 0, color: '#1f2937', fontSize: '22px' }}>Available Committees</h3>
                     <div style={{ width: '24px' }} />
                   </div>
 
                   <p style={{ marginTop: 0, color: '#64748b', marginBottom: '16px' }}>
-                    Select an active committee to assign complaint #{selectedComplaintForAssignment?.Id}.
+                    Select an available committee to assign complaint #{selectedComplaintForAssignment?.Id}.
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {uniqueActiveCommittees.length === 0 ? (
                       <div style={{ padding: '16px', borderRadius: '10px', backgroundColor: '#f8fafc', color: '#475569' }}>
-                        No active committees available.
+                        No available committees.
                       </div>
                     ) : (
                       uniqueActiveCommittees.map((panel) => (

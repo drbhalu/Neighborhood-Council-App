@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getAllUsers } from '../api';
+import { deleteUserById, getAllUsers } from '../api';
 import './AdminDashboard.css';
 import logo from '../assets/logo.png';
 
@@ -38,11 +38,12 @@ const AllUsers = ({ onBack, onEditUser }) => {
 
     setDeleteId(id);
     try {
+      await deleteUserById(id);
       setUsers(users.filter(u => u.Id !== id));
       setFilteredUsers(filteredUsers.filter(u => u.Id !== id));
-      alert("User deleted (Visual only - DB logic pending)");
+      alert("User deleted successfully.");
     } catch (error) {
-      alert("Error deleting user");
+      alert("Error deleting user: " + (error.message || 'Unknown error'));
     } finally {
       setDeleteId(null);
     }

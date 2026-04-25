@@ -61,6 +61,17 @@ export const getAllUsers = async () => {
   return response.json();
 };
 
+export const deleteUserById = async (id) => {
+  const response = await fetch(`${API_URL}/users/${id}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to delete user');
+  }
+  return response.json();
+};
+
 export const getCommitteeSettings = async () => {
   const response = await fetch(`${API_URL}/committee-settings`);
   if (!response.ok) {
@@ -577,7 +588,7 @@ export const getComplaintsByUser = async (userCnic, nhcCode = null) => {
   return response.json();
 };
 
-export const saveCommitteeMeetingDecision = async ({ complaintId, remarks, status, decision, minutesFile, actorCnic, budgetAmount, budgetReason, moreWorkNeeded }) => {
+export const saveCommitteeMeetingDecision = async ({ complaintId, remarks, status, decision, minutesFile, actorCnic, budgetAmount, budgetReason, moreWorkNeeded, resolutionDescription }) => {
   const formData = new FormData();
   if (remarks) formData.append('remarks', remarks);
   if (status) formData.append('status', status);
@@ -587,6 +598,7 @@ export const saveCommitteeMeetingDecision = async ({ complaintId, remarks, statu
   if (budgetAmount) formData.append('budgetAmount', budgetAmount);
   if (budgetReason) formData.append('budgetReason', budgetReason);
   if (moreWorkNeeded) formData.append('moreWorkNeeded', moreWorkNeeded);
+  if (resolutionDescription) formData.append('resolutionDescription', resolutionDescription);
 
   const response = await fetch(`${API_URL}/complaints/${complaintId}/committee-meeting`, {
     method: 'PUT',
@@ -651,6 +663,165 @@ export const getUserRoleInNHC = async (cnic, nhcCode) => {
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to fetch user role for this NHC');
+  }
+  return response.json();
+};
+
+// Budget Management APIs
+export const getBudgetRequests = async (nhcCode) => {
+  const response = await fetch(`${API_URL}/complaints-by-nhc/${encodeURIComponent(nhcCode)}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch budget requests');
+  }
+  const allComplaints = await response.json();
+  return (allComplaints || []).filter((c) => {
+    const hasBudget =
+      String(c.HasBudget || '').toLowerCase() === '1' ||
+      c.HasBudget === true ||
+      String(c.HasBudget).toLowerCase() === 'true';
+    const isBudgetDecision = String(c.MeetingDecision || '').toLowerCase().trim() === 'budget';
+    return hasBudget && isBudgetDecision;
+  });
+};
+
+export const getBudgetStats = async (nhcCode) => {
+  const response = await fetch(`${API_URL}/budget-stats/${encodeURIComponent(nhcCode)}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch budget statistics');
+  }
+  return response.json();
+};
+
+export const getBudgetAvailable = async (nhcCode) => {
+  const response = await fetch(`${API_URL}/budget-available/${encodeURIComponent(nhcCode)}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch available budget');
+  }
+  return response.json();
+};
+
+export const getBudgetHistory = async (nhcCode, cnic) => {
+  const response = await fetch(`${API_URL}/budget-history/${encodeURIComponent(nhcCode)}?cnic=${encodeURIComponent(cnic)}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to fetch budget history');
+  }
+  return response.json();
+};
+
+export const setBudgetAvailable = async (nhcCode, availableBudget) => {
+  const response = await fetch(`${API_URL}/budget-available/${encodeURIComponent(nhcCode)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ availableBudget })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update available budget');
+  }
+  return response.json();
+};
+
+export const allocateBudget = async (complaintId, treasurerCnic, allocatedAmount, budgetCategory) => {
+  const response = await fetch(`${API_URL}/complaints/${complaintId}/allocate-budget`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      allocatedAmount,
+      budgetCategory,
+      treasurerCnic,
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to allocate budget');
+  }
+  return response.json();
+};
+
+export const releaseBudget = async (complaintId, treasurerCnic, allocatedAmount = null, budgetCategory = null) => {
+  const payload = { treasurerCnic };
+  if (allocatedAmount !== null) payload.allocatedAmount = allocatedAmount;
+  if (budgetCategory) payload.budgetCategory = budgetCategory;
+
+  const response = await fetch(`${API_URL}/complaints/${complaintId}/release-budget`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to release budget');
+  }
+  return response.json();
+};
+
+export const rejectBudget = async (complaintId, treasurerCnic, rejectionReason) => {
+  const response = await fetch(`${API_URL}/complaints/${complaintId}/reject-budget`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rejectionReason,
+      treasurerCnic
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to reject budget request');
+  }
+  return response.json();
+};
+
+export const approveBudgetRequest = async (complaintId, presidentCnic, presidentComments = '') => {
+  const response = await fetch(`${API_URL}/complaints/${complaintId}/president-approval`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'approve',
+      presidentCnic,
+      presidentComments
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to approve budget request');
+  }
+  return response.json();
+};
+
+export const rejectBudgetRequest = async (complaintId, presidentCnic, presidentComments = '') => {
+  const response = await fetch(`${API_URL}/complaints/${complaintId}/president-approval`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'reject',
+      presidentCnic,
+      presidentComments
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to reject budget request');
+  }
+  return response.json();
+};
+
+export const requestBudgetChanges = async (complaintId, presidentCnic, presidentComments = '') => {
+  const response = await fetch(`${API_URL}/complaints/${complaintId}/president-approval`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'request-changes',
+      presidentCnic,
+      presidentComments
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to request budget changes');
   }
   return response.json();
 };

@@ -2,16 +2,28 @@ const express = require('express');
 const sql = require('mssql');
 const cors = require('cors');
 const multer = require('multer');
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+const PROFILE_PICTURES_DIR = path.join(__dirname, 'profile-pictures');
+const COMPLAINT_PHOTOS_DIR = path.join(__dirname, 'complaint-photos');
+const MEETING_MINUTES_DIR = path.join(__dirname, 'meeting-minutes');
+
+// Ensure upload directories exist even if the server starts from a different CWD.
+[PROFILE_PICTURES_DIR, COMPLAINT_PHOTOS_DIR, MEETING_MINUTES_DIR].forEach((dirPath) => {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+});
+
 // --- MULTER CONFIGURATION FOR PROFILE PICTURES ---
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'profile-pictures/');
+    cb(null, PROFILE_PICTURES_DIR);
   },
   filename: function (req, file, cb) {
     const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
@@ -33,12 +45,12 @@ const upload = multer({
 });
 
 // Serve profile pictures as static files
-app.use('/profile-pictures', express.static('profile-pictures'));
+app.use('/profile-pictures', express.static(PROFILE_PICTURES_DIR));
 
 // --- MULTER CONFIGURATION FOR COMPLAINT PHOTOS ---
 const complaintStorage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'complaint-photos/');
+    cb(null, COMPLAINT_PHOTOS_DIR);
   },
   filename: function (req, file, cb) {
     const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
@@ -60,12 +72,12 @@ const complaintUpload = multer({
 });
 
 // Serve complaint photos as static files
-app.use('/complaint-photos', express.static('complaint-photos'));
+app.use('/complaint-photos', express.static(COMPLAINT_PHOTOS_DIR));
 
-// --- MULTER CONFIGURATION FOR COMMITTEE MEETING MINUTES (PDF) ---
+// --- MULTER CONFIGURATION FOR COMMITTEE MEETING EVIDENCE (IMAGE/PDF) ---
 const meetingMinutesStorage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'meeting-minutes/');
+    cb(null, MEETING_MINUTES_DIR);
   },
   filename: function (req, file, cb) {
     const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
@@ -77,16 +89,17 @@ const meetingMinutesUpload = multer({
   storage: meetingMinutesStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: function (req, file, cb) {
-    if (file.mimetype === 'application/pdf') {
+    const allowedMimes = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PDF is allowed for meeting minutes.'));
+      cb(new Error('Invalid file type. Only PDF or image files (JPEG, PNG, GIF, WebP) are allowed.'));
     }
   }
 });
 
 // Serve meeting minutes as static files
-app.use('/meeting-minutes', express.static('meeting-minutes'));
+app.use('/meeting-minutes', express.static(MEETING_MINUTES_DIR));
 
 // --- CONFIGURATION ---
 const dbConfig = {
@@ -185,6 +198,19 @@ async function initDB() {
       INSERT INTO CommitteeSettings (SettingKey, SettingValue) VALUES ('CommitteeMemberCount', 3)
     `);
     console.log('✓ Table CommitteeSettings ready.');
+
+    // --- NEW: Create NHC budget table for available budget entries ---
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='NHCBudgets' AND xtype='U')
+      CREATE TABLE NHCBudgets (
+        Id INT IDENTITY(1,1) PRIMARY KEY,
+        NHC_Code NVARCHAR(100) NOT NULL,
+        AvailableBudget DECIMAL(18,2) DEFAULT 0,
+        UpdatedDate DATETIME DEFAULT GETDATE(),
+        CONSTRAINT UQ_NHCBudgets_NHC_Code UNIQUE (NHC_Code)
+      )
+    `);
+    console.log('✓ Table NHCBudgets ready.');
 
     // Add ProfileImage column if missing
     await nhcPool.request().query(`
@@ -613,7 +639,16 @@ async function initDB() {
         MeetingDate DATETIME,
         Status NVARCHAR(50) DEFAULT 'Pending',
         CreatedDate DATETIME DEFAULT GETDATE(),
-        UpdatedDate DATETIME DEFAULT GETDATE()
+        UpdatedDate DATETIME DEFAULT GETDATE(),
+
+        -- Budget Allocation Fields
+        BudgetAllocatedAmount DECIMAL(18,2) DEFAULT 0,
+        BudgetAllocatedDate DATETIME NULL,
+        BudgetAllocatedByCNIC NVARCHAR(20) NULL,
+        BudgetAllocationStatus NVARCHAR(50) DEFAULT 'pending', -- pending, allocated, released
+        BudgetCategory NVARCHAR(100) NULL,
+        BudgetReleasedDate DATETIME NULL,
+        BudgetReleasedByCNIC NVARCHAR(20) NULL
       )
     `);
 
@@ -807,6 +842,28 @@ async function initDB() {
     await nhcPool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'PresidentApprovingCNIC' AND Object_ID = OBJECT_ID('Complaints'))
       ALTER TABLE Complaints ADD PresidentApprovingCNIC NVARCHAR(20) NULL;
+
+      -- Budget Allocation Columns
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'BudgetAllocatedAmount' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD BudgetAllocatedAmount DECIMAL(18,2) DEFAULT 0;
+
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'BudgetAllocatedDate' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD BudgetAllocatedDate DATETIME NULL;
+
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'BudgetAllocatedByCNIC' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD BudgetAllocatedByCNIC NVARCHAR(20) NULL;
+
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'BudgetAllocationStatus' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD BudgetAllocationStatus NVARCHAR(50) DEFAULT 'pending';
+
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'BudgetCategory' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD BudgetCategory NVARCHAR(100) NULL;
+
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'BudgetReleasedDate' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD BudgetReleasedDate DATETIME NULL;
+
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'BudgetReleasedByCNIC' AND Object_ID = OBJECT_ID('Complaints'))
+      ALTER TABLE Complaints ADD BudgetReleasedByCNIC NVARCHAR(20) NULL;
     `);
     await nhcPool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'ApprovedDate' AND Object_ID = OBJECT_ID('Complaints'))
@@ -1638,6 +1695,81 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
+// 6.1 DELETE USER (Admin)
+app.delete('/api/users/:id', async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+  let pool;
+  let transaction;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'Valid user id is required' });
+  }
+
+  try {
+    pool = await sql.connect(dbConfig);
+    transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    const request = new sql.Request(transaction);
+    const userRes = await request
+      .input('Id', sql.Int, userId)
+      .query('SELECT Id, CNIC FROM Users WHERE Id = @Id');
+
+    if (userRes.recordset.length === 0) {
+      await transaction.rollback();
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userCnic = String(userRes.recordset[0].CNIC || '').trim();
+
+    // Remove or detach related records that can block user deletion.
+    await new sql.Request(transaction)
+      .input('CNIC', sql.NVarChar, userCnic)
+      .input('Id', sql.Int, userId)
+      .query(`
+        DELETE FROM Notifications WHERE RecipientCNIC = @CNIC;
+        DELETE FROM UserNHCs WHERE UserCNIC = @CNIC;
+        DELETE FROM PanelMembers WHERE CNIC = @CNIC;
+        DELETE FROM Requests WHERE CNIC = @CNIC;
+        DELETE FROM Suggestions WHERE UserCNIC = @CNIC;
+        DELETE FROM ElectionVotes WHERE VoterCNIC = @CNIC;
+        DELETE FROM CandidateSupports WHERE SupporterCNIC = @CNIC;
+        DELETE FROM Candidates WHERE CNIC = @CNIC;
+
+        UPDATE Complaints SET AgainstMemberCNIC = NULL, AgainstMemberName = NULL WHERE AgainstMemberCNIC = @CNIC;
+
+        DELETE cal
+        FROM ComplaintActivityLog cal
+        INNER JOIN Complaints c ON c.Id = cal.ComplaintId
+        WHERE c.UserCNIC = @CNIC;
+
+        DELETE pc
+        FROM PanelComplaints pc
+        INNER JOIN Complaints c ON c.Id = pc.ComplaintId
+        WHERE c.UserCNIC = @CNIC;
+
+        UPDATE Panels
+        SET ComplaintId = NULL
+        WHERE ComplaintId IN (SELECT Id FROM Complaints WHERE UserCNIC = @CNIC);
+
+        DELETE FROM Complaints WHERE UserCNIC = @CNIC;
+
+        DELETE FROM Users WHERE Id = @Id;
+      `);
+
+    await transaction.commit();
+    res.json({ success: true, message: 'User deleted successfully' });
+  } catch (err) {
+    if (transaction) {
+      try { await transaction.rollback(); } catch (_) {}
+    }
+    console.error('Delete user error:', err);
+    res.status(500).json({ error: err.message || 'Failed to delete user' });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
 // 7. CREATE REQUEST
 app.post('/api/request', async (req, res) => {
   console.log("POST /api/request called...");
@@ -2296,6 +2428,7 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
     const budgetAmount = String(req.body?.budgetAmount || '').trim();
     const budgetReason = String(req.body?.budgetReason || '').trim();
     const moreWorkNeeded = String(req.body?.moreWorkNeeded || '').trim();
+    const resolutionDescription = String(req.body?.resolutionDescription || '').trim();
 
     if (!complaintId) {
       return res.status(400).json({ error: 'Valid complaint id is required' });
@@ -2344,18 +2477,25 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
     if (decision === 'inprogress' && moreWorkNeeded) {
       detailsParts.push(`More Work Needed: ${moreWorkNeeded}`);
     }
+    if (decision === 'solved' && resolutionDescription) {
+      detailsParts.push(`Resolution Details: ${resolutionDescription}`);
+    }
     const mergedRemarks = detailsParts.join('\n\n');
 
     const cleanedStatus = String(status || '').trim();
     const normalizedStatus = actorRole === 'president' && cleanedStatus.toLowerCase() === 'resolved'
       ? 'Resolved'
-      : cleanedStatus.toLowerCase() === 'pending president review'
+      : decision === 'budget'
         ? 'Pending President Review'
-        : 'In-Progress';
+        : cleanedStatus.toLowerCase() === 'pending president review'
+          ? 'Pending President Review'
+          : 'In-Progress';
 
     const presidentApprovalStatus = actorRole !== 'president' && normalizedStatus === 'Pending President Review'
       ? 'pending'
       : null;
+
+    const hasBudgetFlag = decision === 'budget' ? 1 : 0;
 
     await pool.request()
       .input('Id', sql.Int, complaintId)
@@ -2364,6 +2504,7 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
       .input('MeetingMinutesPath', sql.NVarChar(sql.MAX), minutesPath)
       .input('Status', sql.NVarChar(50), normalizedStatus)
       .input('PresidentApprovalStatus', sql.NVarChar(50), presidentApprovalStatus)
+      .input('HasBudget', sql.Bit, hasBudgetFlag)
       .query(`
         UPDATE Complaints
         SET CommitteeRemarks = @CommitteeRemarks,
@@ -2372,6 +2513,7 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
             MeetingDate = GETDATE(),
             Status = @Status,
             PresidentApprovalStatus = COALESCE(@PresidentApprovalStatus, PresidentApprovalStatus),
+            HasBudget = @HasBudget,
             UpdatedDate = GETDATE()
         WHERE Id = @Id
       `);
@@ -2387,6 +2529,24 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
       resolutionPhotosSnapshot: null,
       statusSnapshot: normalizedStatus,
     });
+
+    // When president finalizes as resolved, detach this complaint from active committee assignments.
+    if (actorRole === 'president' && normalizedStatus === 'Resolved') {
+      await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .query(`
+          DELETE FROM PanelComplaints
+          WHERE ComplaintId = @ComplaintId
+        `);
+
+      await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .query(`
+          UPDATE Panels
+          SET ComplaintId = NULL
+          WHERE ComplaintId = @ComplaintId
+        `);
+    }
 
     try {
       const owner = currentRes.recordset[0];
@@ -2481,20 +2641,45 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
     // Verify complaint exists
     const complaintRes = await pool.request()
       .input('Id', sql.Int, complaintId)
-      .query('SELECT Id, UserCNIC, Category, Status FROM Complaints WHERE Id = @Id');
+      .query('SELECT Id, UserCNIC, Category, Status, HasBudget, BudgetAllocationStatus, NHC_Code FROM Complaints WHERE Id = @Id');
 
     if (complaintRes.recordset.length === 0) {
       return res.status(404).json({ error: 'Complaint not found' });
     }
 
     const complaint = complaintRes.recordset[0];
+
+    // Verify president has authority for this NHC
+    let isPresident = String(presidentRes.recordset[0].Role || '').toLowerCase() === 'president';
+    if (!isPresident) {
+      const presidentNHCRes = await pool.request()
+        .input('CNIC', sql.NVarChar, presidentCnic)
+        .input('NHC_Code', sql.NVarChar, complaint.NHC_Code)
+        .query('SELECT Role FROM UserNHCs WHERE UserCNIC = @CNIC AND NHC_Code = @NHC_Code');
+
+      isPresident = presidentNHCRes.recordset.length > 0 && String(presidentNHCRes.recordset[0].Role || '').toLowerCase() === 'president';
+    }
+
+    if (!isPresident) {
+      return res.status(403).json({ error: 'User is not authorized as president for this NHC' });
+    }
+
+    // Verify complaint is pending president review
+    if (complaint.Status !== 'Pending President Review') {
+      return res.status(400).json({ error: 'Complaint is not pending president review' });
+    }
     let newStatus = complaint.Status;
     let approvalStatus = 'pending';
+    const isBudgetApproval = Boolean(complaint.HasBudget && String(complaint.BudgetAllocationStatus || '').toLowerCase() !== 'released');
 
     // Determine new status and approval status based on action
     if (action === 'approve') {
-      newStatus = 'Resolved';
       approvalStatus = 'approved';
+      if (!isBudgetApproval) {
+        newStatus = 'Resolved';
+      } else {
+        newStatus = 'In-Progress';
+      }
     } else if (action === 'reject') {
       approvalStatus = 'rejected';
       newStatus = 'In-Progress'; // Back to committee
@@ -2529,7 +2714,7 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
       complaintId,
       actorCnic: presidentCnic,
       actorRole: 'president',
-      actionType: `president-${action.replace('-', '')}`,
+      actionType: isBudgetApproval ? 'president-approved-budget' : `president-${action.replace('-', '')}`,
       remarksSnapshot: null,
       decisionSnapshot: null,
       minutesPathSnapshot: null,
@@ -2537,8 +2722,8 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
       statusSnapshot: newStatus,
     });
 
-    // If approved, complete the panel assignment
-    if (action === 'approve') {
+    // If approved and this is a final complaint resolution, complete the panel assignment
+    if (action === 'approve' && !isBudgetApproval) {
       const panelRes = await pool.request()
         .input('ComplaintId', sql.Int, complaintId)
         .query(`
@@ -2579,7 +2764,9 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
     // Send notifications
     try {
       const messageMap = {
-        'approve': `✅ Your decision on Complaint #${complaintId} was APPROVED by the president. Complaint is now RESOLVED.`,
+        'approve': isBudgetApproval
+          ? `✅ Your budget request for Complaint #${complaintId} was APPROVED by the president. The treasurer can now release the funds to the committee.`
+          : `✅ Your decision on Complaint #${complaintId} was APPROVED by the president. Complaint is now RESOLVED.`,
         'reject': `❌ Your decision on Complaint #${complaintId} was REJECTED by the president. Feedback: ${presidentComments}`,
         'request-changes': `📝 President requested changes for Complaint #${complaintId}. Feedback: ${presidentComments}`
       };
@@ -2606,7 +2793,9 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
       if (action === 'approve') {
         await pool.request()
           .input('RecipientCNIC', sql.NVarChar, complaint.UserCNIC)
-          .input('Message', sql.NVarChar(sql.MAX), `✅ Your complaint has been RESOLVED by the president.`)
+          .input('Message', sql.NVarChar(sql.MAX), isBudgetApproval
+            ? `✅ Your budget request for Complaint #${complaintId} was approved by the president.`
+            : `✅ Your complaint has been RESOLVED by the president.`)
           .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
       }
     } catch (notifyErr) {
@@ -2624,6 +2813,586 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
   } catch (err) {
     console.error('Error processing president approval:', err);
     res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// PUT: Allocate Budget (Treasurer allocates budget to approved requests)
+app.put('/api/complaints/:id/allocate-budget', async (req, res) => {
+  let pool;
+  try {
+    const complaintId = parseInt(req.params.id, 10);
+    const { allocatedAmount, budgetCategory, treasurerCnic } = req.body;
+
+    if (!complaintId) {
+      return res.status(400).json({ error: 'Valid complaint id is required' });
+    }
+
+    if (!allocatedAmount || allocatedAmount <= 0) {
+      return res.status(400).json({ error: 'Valid allocated amount is required' });
+    }
+
+    if (!budgetCategory) {
+      return res.status(400).json({ error: 'Budget category is required' });
+    }
+
+    if (!treasurerCnic) {
+      return res.status(400).json({ error: 'Treasurer CNIC is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    // Check if complaint exists and is approved by president
+    const complaintRes = await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .query('SELECT Id, PresidentApprovalStatus, HasBudget, NHC_Code FROM Complaints WHERE Id = @Id');
+
+    if (complaintRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const complaint = complaintRes.recordset[0];
+    if (!complaint.HasBudget) {
+      return res.status(400).json({ error: 'This complaint does not have a budget request' });
+    }
+
+    if (complaint.PresidentApprovalStatus !== 'approved') {
+      return res.status(400).json({ error: 'Budget can only be allocated for president-approved requests' });
+    }
+
+    // Verify treasurer exists and has treasurer role either globally or for this NHC
+    const treasurerRes = await pool.request()
+      .input('CNIC', sql.NVarChar, treasurerCnic)
+      .query('SELECT Role FROM Users WHERE CNIC = @CNIC');
+
+    if (treasurerRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Treasurer user not found' });
+    }
+
+    let isTreasurer = String(treasurerRes.recordset[0].Role || '').toLowerCase() === 'treasurer';
+    if (!isTreasurer) {
+      const treasurerNHCRes = await pool.request()
+        .input('CNIC', sql.NVarChar, treasurerCnic)
+        .input('NHC_Code', sql.NVarChar, complaint.NHC_Code)
+        .query('SELECT Role FROM UserNHCs WHERE UserCNIC = @CNIC AND NHC_Code = @NHC_Code');
+
+      isTreasurer = treasurerNHCRes.recordset.length > 0 && String(treasurerNHCRes.recordset[0].Role || '').toLowerCase() === 'treasurer';
+    }
+
+    if (!isTreasurer) {
+      return res.status(403).json({ error: 'User is not authorized as treasurer' });
+    }
+
+    // Allocate the budget
+    const result = await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .input('BudgetAllocatedAmount', sql.Decimal(18, 2), allocatedAmount)
+      .input('BudgetAllocatedDate', sql.DateTime, new Date())
+      .input('BudgetAllocatedByCNIC', sql.NVarChar, treasurerCnic)
+      .input('BudgetAllocationStatus', sql.NVarChar, 'allocated')
+      .input('BudgetCategory', sql.NVarChar, budgetCategory)
+      .query(`
+        UPDATE Complaints
+        SET BudgetAllocatedAmount = @BudgetAllocatedAmount,
+            BudgetAllocatedDate = @BudgetAllocatedDate,
+            BudgetAllocatedByCNIC = @BudgetAllocatedByCNIC,
+            BudgetAllocationStatus = @BudgetAllocationStatus,
+            BudgetCategory = @BudgetCategory,
+            UpdatedDate = GETDATE()
+        WHERE Id = @Id
+      `);
+
+    // Log the allocation action
+    await logComplaintActivity(pool, {
+      complaintId,
+      actorCnic: treasurerCnic,
+      actorRole: 'treasurer',
+      actionType: 'budget-allocated',
+      remarksSnapshot: `Budget of ${allocatedAmount} allocated to category: ${budgetCategory}`,
+      decisionSnapshot: null,
+      minutesPathSnapshot: null,
+      resolutionPhotosSnapshot: null,
+      statusSnapshot: 'Budget Allocated',
+    });
+
+    res.json({ message: 'Budget allocated successfully', complaintId, allocation: result.recordset[0] });
+  } catch (err) {
+    console.error('Error allocating budget:', err);
+    res.status(500).json({ error: 'Failed to allocate budget' });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// PUT: Reject Budget Request (Treasurer rejects approved budget requests)
+app.put('/api/complaints/:id/reject-budget', async (req, res) => {
+  let pool;
+  try {
+    const complaintId = parseInt(req.params.id, 10);
+    const { rejectionReason, treasurerCnic } = req.body;
+
+    if (!complaintId) {
+      return res.status(400).json({ error: 'Valid complaint id is required' });
+    }
+
+    if (!rejectionReason || rejectionReason.trim() === '') {
+      return res.status(400).json({ error: 'Rejection reason is required' });
+    }
+
+    if (!treasurerCnic) {
+      return res.status(400).json({ error: 'Treasurer CNIC is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    // Check if complaint exists and is approved by president
+    const complaintRes = await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .query('SELECT Id, PresidentApprovalStatus, HasBudget, NHC_Code, UserCNIC FROM Complaints WHERE Id = @Id');
+
+    if (complaintRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const complaint = complaintRes.recordset[0];
+    if (!complaint.HasBudget) {
+      return res.status(400).json({ error: 'This complaint does not have a budget request' });
+    }
+
+    if (complaint.PresidentApprovalStatus !== 'approved') {
+      return res.status(400).json({ error: 'Budget can only be rejected for president-approved requests' });
+    }
+
+    // Verify treasurer exists and has treasurer role either globally or for this NHC
+    const treasurerRes = await pool.request()
+      .input('CNIC', sql.NVarChar, treasurerCnic)
+      .query('SELECT Role FROM Users WHERE CNIC = @CNIC');
+
+    if (treasurerRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Treasurer user not found' });
+    }
+
+    let isTreasurer = String(treasurerRes.recordset[0].Role || '').toLowerCase() === 'treasurer';
+    if (!isTreasurer) {
+      const treasurerNHCRes = await pool.request()
+        .input('CNIC', sql.NVarChar, treasurerCnic)
+        .input('NHC_Code', sql.NVarChar, complaint.NHC_Code)
+        .query('SELECT Role FROM UserNHCs WHERE UserCNIC = @CNIC AND NHC_Code = @NHC_Code');
+
+      isTreasurer = treasurerNHCRes.recordset.length > 0 && String(treasurerNHCRes.recordset[0].Role || '').toLowerCase() === 'treasurer';
+    }
+
+    if (!isTreasurer) {
+      return res.status(403).json({ error: 'User is not authorized as treasurer' });
+    }
+
+    // Reject the budget request
+    await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .input('BudgetAllocationStatus', sql.NVarChar, 'rejected')
+      .input('BudgetRejectionReason', sql.NVarChar(sql.MAX), rejectionReason)
+      .input('BudgetRejectedDate', sql.DateTime, new Date())
+      .input('BudgetRejectedByCNIC', sql.NVarChar, treasurerCnic)
+      .query(`
+        UPDATE Complaints
+        SET BudgetAllocationStatus = @BudgetAllocationStatus,
+            BudgetRejectionReason = @BudgetRejectionReason,
+            BudgetRejectedDate = @BudgetRejectedDate,
+            BudgetRejectedByCNIC = @BudgetRejectedByCNIC,
+            Status = 'In-Progress',
+            UpdatedDate = GETDATE()
+        WHERE Id = @Id
+      `);
+
+    // Log the rejection action
+    await logComplaintActivity(pool, {
+      complaintId,
+      actorCnic: treasurerCnic,
+      actorRole: 'treasurer',
+      actionType: 'budget-rejected',
+      remarksSnapshot: `Budget request rejected: ${rejectionReason}`,
+      decisionSnapshot: null,
+      minutesPathSnapshot: null,
+      resolutionPhotosSnapshot: null,
+      statusSnapshot: 'Budget Rejected',
+    });
+
+    // Send notifications
+    try {
+      // Notify committee members
+      const committeeRes = await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .query(`
+          SELECT DISTINCT u.CNIC
+          FROM PanelComplaints pc
+          INNER JOIN Panels p ON pc.PanelId = p.Id
+          INNER JOIN PanelMembers pm ON p.Id = pm.PanelId
+          INNER JOIN Users u ON pm.CNIC = u.CNIC
+          WHERE pc.ComplaintId = @ComplaintId AND p.Status = 'active'
+        `);
+
+      const committeeMessage = `❌ Your budget request for Complaint #${complaintId} was rejected by the treasurer. Reason: ${rejectionReason}`;
+
+      for (const member of committeeRes.recordset) {
+        await pool.request()
+          .input('RecipientCNIC', sql.NVarChar, member.CNIC)
+          .input('Message', sql.NVarChar(sql.MAX), committeeMessage)
+          .query(`INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)`);
+      }
+
+      // Notify complainant
+      await pool.request()
+        .input('RecipientCNIC', sql.NVarChar, complaint.UserCNIC)
+        .input('Message', sql.NVarChar(sql.MAX), `❌ Your budget request for Complaint #${complaintId} was rejected by the treasurer. Reason: ${rejectionReason}`)
+        .query(`INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)`);
+
+    } catch (notifyErr) {
+      console.error('Error sending budget rejection notifications:', notifyErr);
+    }
+
+    res.json({ message: 'Budget request rejected successfully', complaintId });
+  } catch (err) {
+    console.error('Error rejecting budget:', err);
+    res.status(500).json({ error: 'Failed to reject budget request' });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// PUT: Release Budget Allocation (Treasurer releases allocated budget to committee)
+app.put('/api/complaints/:id/release-budget', async (req, res) => {
+  let pool;
+  try {
+    const complaintId = parseInt(req.params.id, 10);
+    const { treasurerCnic, allocatedAmount, budgetCategory } = req.body;
+
+    if (!complaintId) {
+      return res.status(400).json({ error: 'Valid complaint id is required' });
+    }
+
+    if (!treasurerCnic) {
+      return res.status(400).json({ error: 'Treasurer CNIC is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    const complaintRes = await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .query('SELECT Id, BudgetAllocationStatus, BudgetAllocatedAmount, BudgetCategory, PresidentApprovalStatus, NHC_Code FROM Complaints WHERE Id = @Id');
+
+    if (complaintRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+
+    const complaint = complaintRes.recordset[0];
+    if (complaint.BudgetAllocationStatus === 'released') {
+      return res.status(400).json({ error: 'Budget has already been released' });
+    }
+
+    // Verify treasurer exists and has treasurer role either globally or for this NHC
+    const treasurerRes = await pool.request()
+      .input('CNIC', sql.NVarChar, treasurerCnic)
+      .query('SELECT Role FROM Users WHERE CNIC = @CNIC');
+
+    if (treasurerRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'Treasurer user not found' });
+    }
+
+    let isTreasurer = String(treasurerRes.recordset[0].Role || '').toLowerCase() === 'treasurer';
+    if (!isTreasurer) {
+      const treasurerNHCRes = await pool.request()
+        .input('CNIC', sql.NVarChar, treasurerCnic)
+        .input('NHC_Code', sql.NVarChar, complaint.NHC_Code)
+        .query('SELECT Role FROM UserNHCs WHERE UserCNIC = @CNIC AND NHC_Code = @NHC_Code');
+
+      isTreasurer = treasurerNHCRes.recordset.length > 0 && String(treasurerNHCRes.recordset[0].Role || '').toLowerCase() === 'treasurer';
+    }
+
+    if (!isTreasurer) {
+      return res.status(403).json({ error: 'User is not authorized as treasurer' });
+    }
+
+    if (complaint.BudgetAllocationStatus === 'pending') {
+      if (complaint.PresidentApprovalStatus !== 'approved') {
+        return res.status(400).json({ error: 'Budget can only be released for president-approved requests' });
+      }
+      if (!allocatedAmount || allocatedAmount <= 0) {
+        return res.status(400).json({ error: 'Valid allocated amount is required to release budget' });
+      }
+      if (!budgetCategory) {
+        return res.status(400).json({ error: 'Budget category is required to release budget' });
+      }
+
+      // Check available budget
+      const availableRes = await pool.request()
+        .input('NHC_Code', sql.NVarChar, complaint.NHC_Code)
+        .query('SELECT TOP 1 AvailableBudget FROM NHCBudgets WHERE NHC_Code = @NHC_Code');
+      const availableBudget = availableRes.recordset[0]?.AvailableBudget || 0;
+      if (allocatedAmount > availableBudget) {
+        return res.status(400).json({ error: `Allocated amount (PKR ${allocatedAmount.toFixed(2)}) exceeds available budget (PKR ${Number.parseFloat(availableBudget).toFixed(2)})` });
+      }
+    }
+
+    const request = pool.request()
+      .input('Id', sql.Int, complaintId)
+      .input('BudgetAllocationStatus', sql.NVarChar, 'released')
+      .input('BudgetReleasedDate', sql.DateTime, new Date())
+      .input('BudgetReleasedByCNIC', sql.NVarChar, treasurerCnic);
+
+    let allocationFields = '';
+    if (complaint.BudgetAllocationStatus === 'pending') {
+      request.input('BudgetAllocatedAmount', sql.Decimal(18, 2), allocatedAmount)
+        .input('BudgetAllocatedDate', sql.DateTime, new Date())
+        .input('BudgetAllocatedByCNIC', sql.NVarChar, treasurerCnic)
+        .input('BudgetCategory', sql.NVarChar, budgetCategory);
+      allocationFields = ', BudgetAllocatedAmount = @BudgetAllocatedAmount, BudgetAllocatedDate = @BudgetAllocatedDate, BudgetAllocatedByCNIC = @BudgetAllocatedByCNIC, BudgetCategory = @BudgetCategory';
+    } else if (budgetCategory) {
+      request.input('BudgetCategory', sql.NVarChar, budgetCategory);
+      allocationFields = ', BudgetCategory = @BudgetCategory';
+    }
+
+    await request.query(`
+      UPDATE Complaints
+      SET BudgetAllocationStatus = @BudgetAllocationStatus,
+          BudgetReleasedDate = @BudgetReleasedDate,
+          BudgetReleasedByCNIC = @BudgetReleasedByCNIC${allocationFields},
+          UpdatedDate = GETDATE()
+      WHERE Id = @Id
+    `);
+
+    // Log the budget release action
+    const releasedAmount = complaint.BudgetAllocationStatus === 'pending' ? allocatedAmount : complaint.BudgetAllocatedAmount;
+    await logComplaintActivity(pool, {
+      complaintId,
+      actorCnic: treasurerCnic,
+      actorRole: 'treasurer',
+      actionType: 'budget-released',
+      remarksSnapshot: `Budget of ${releasedAmount} released to committee`,
+      decisionSnapshot: null,
+      minutesPathSnapshot: null,
+      resolutionPhotosSnapshot: null,
+      statusSnapshot: 'Budget Released',
+    });
+
+    // Notify committee members about budget release
+    try {
+      const committeeRes = await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .query(`
+          SELECT DISTINCT u.CNIC
+          FROM PanelComplaints pc
+          INNER JOIN Panels p ON pc.PanelId = p.Id
+          INNER JOIN PanelMembers pm ON p.Id = pm.PanelId
+          INNER JOIN Users u ON pm.CNIC = u.CNIC
+          WHERE pc.ComplaintId = @ComplaintId AND p.Status = 'active'
+        `);
+
+      const notificationMessage = `Budget of PKR ${releasedAmount} has been released for your committee's complaint resolution.`;
+
+      for (const member of committeeRes.recordset) {
+        await pool.request()
+          .input('RecipientCNIC', sql.NVarChar, member.CNIC)
+          .input('Message', sql.NVarChar(sql.MAX), notificationMessage)
+          .query(`
+            INSERT INTO Notifications (RecipientCNIC, Message)
+            VALUES (@RecipientCNIC, @Message)
+          `);
+        }
+    } catch (notifyErr) {
+      console.error('Error sending budget release notifications:', notifyErr);
+      // Don't fail the whole operation if notifications fail
+    }
+
+    // Update available budget
+    await pool.request()
+      .input('NHC_Code', sql.NVarChar, complaint.NHC_Code)
+      .input('ReleasedAmount', sql.Decimal(18, 2), releasedAmount)
+      .query(`
+        UPDATE NHCBudgets
+        SET AvailableBudget = AvailableBudget - @ReleasedAmount, UpdatedDate = GETDATE()
+        WHERE NHC_Code = @NHC_Code
+      `);
+
+    res.json({ message: 'Budget released successfully', complaintId });
+  } catch (err) {
+    console.error('Error releasing budget:', err);
+    res.status(500).json({ error: 'Failed to release budget' });
+  }
+});
+
+// GET: Budget Allocation Statistics for Treasurer Dashboard
+app.get('/api/budget-stats/:nhcCode', async (req, res) => {
+  let pool;
+  try {
+    const nhcCode = req.params.nhcCode;
+
+    if (!nhcCode) {
+      return res.status(400).json({ error: 'NHC Code is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    // Get budget statistics
+    const statsRes = await pool.request()
+      .input('NHC_Code', sql.NVarChar, nhcCode)
+      .query(`
+        SELECT
+          COUNT(*) as total_budget_requests,
+          SUM(CASE WHEN PresidentApprovalStatus = 'approved' THEN 1 ELSE 0 END) as approved_requests,
+          SUM(CASE WHEN BudgetAllocationStatus = 'allocated' THEN 1 ELSE 0 END) as allocated_requests,
+          SUM(CASE WHEN BudgetAllocationStatus = 'released' THEN 1 ELSE 0 END) as released_requests,
+          SUM(CASE WHEN BudgetAllocationStatus = 'rejected' THEN 1 ELSE 0 END) as rejected_requests,
+          SUM(CASE WHEN PresidentApprovalStatus = 'approved' AND BudgetAllocationStatus = 'pending' THEN 1 ELSE 0 END) as pending_allocation,
+          SUM(CASE WHEN BudgetAllocatedAmount > 0 THEN BudgetAllocatedAmount ELSE 0 END) as total_allocated_amount,
+          SUM(CASE WHEN BudgetAllocationStatus = 'released' THEN BudgetAllocatedAmount ELSE 0 END) as total_released_amount,
+          MAX(nb.AvailableBudget) as total_budget_available
+        FROM Complaints
+        LEFT JOIN NHCBudgets nb ON nb.NHC_Code = Complaints.NHC_Code
+        WHERE Complaints.NHC_Code = @NHC_Code AND Complaints.HasBudget = 1
+      `);
+
+    const stats = statsRes.recordset[0];
+
+    const dbAvailable = stats.total_budget_available;
+    const computedAvailable = Math.max(0, (stats.total_allocated_amount || 0) - (stats.total_released_amount || 0));
+    const normalizedAvailable = dbAvailable !== null && dbAvailable !== undefined
+      ? Number.parseFloat(dbAvailable)
+      : computedAvailable;
+
+    res.json({
+      totalRequests: stats.total_budget_requests || 0,
+      approvedRequests: stats.approved_requests || 0,
+      allocatedRequests: stats.allocated_requests || 0,
+      releasedRequests: stats.released_requests || 0,
+      rejectedRequests: stats.rejected_requests || 0,
+      pendingAllocation: stats.pending_allocation || 0,
+      totalAllocatedAmount: stats.total_allocated_amount || 0,
+      totalReleasedAmount: stats.total_released_amount || 0,
+      totalBudgetAvailable: Number.isNaN(normalizedAvailable) ? computedAvailable : normalizedAvailable
+    });
+  } catch (err) {
+    console.error('Error fetching budget stats:', err);
+    res.status(500).json({ error: 'Failed to fetch budget statistics' });
+  }
+});
+
+// GET: Available budget amount for a specific NHC
+app.get('/api/budget-available/:nhcCode', async (req, res) => {
+  let pool;
+  try {
+    const nhcCode = req.params.nhcCode;
+    if (!nhcCode) return res.status(400).json({ error: 'NHC Code is required' });
+    pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('NHC_Code', sql.NVarChar, nhcCode)
+      .query('SELECT TOP 1 AvailableBudget FROM NHCBudgets WHERE NHC_Code = @NHC_Code');
+    res.json({ availableBudget: result.recordset[0]?.AvailableBudget ?? 0 });
+  } catch (err) {
+    console.error('Error fetching available budget:', err);
+    res.status(500).json({ error: 'Failed to fetch available budget' });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// PUT: Set available budget for an NHC
+app.put('/api/budget-available/:nhcCode', async (req, res) => {
+  let pool;
+  try {
+    const nhcCode = req.params.nhcCode;
+    const availableBudget = parseFloat(req.body?.availableBudget);
+    if (!nhcCode) return res.status(400).json({ error: 'NHC Code is required' });
+    if (Number.isNaN(availableBudget) || availableBudget < 0) {
+      return res.status(400).json({ error: 'Valid available budget is required' });
+    }
+    pool = await sql.connect(dbConfig);
+    await pool.request()
+      .input('NHC_Code', sql.NVarChar, nhcCode)
+      .input('AvailableBudget', sql.Decimal(18, 2), availableBudget)
+      .query(`
+        IF EXISTS (SELECT 1 FROM NHCBudgets WHERE NHC_Code = @NHC_Code)
+          UPDATE NHCBudgets SET AvailableBudget = @AvailableBudget, UpdatedDate = GETDATE() WHERE NHC_Code = @NHC_Code
+        ELSE
+          INSERT INTO NHCBudgets (NHC_Code, AvailableBudget) VALUES (@NHC_Code, @AvailableBudget)
+      `);
+    res.json({ message: 'Available budget updated successfully', availableBudget });
+  } catch (err) {
+    console.error('Error updating available budget:', err);
+    res.status(500).json({ error: 'Failed to update available budget' });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
+// GET: Budget Allocation History for Treasurer
+app.get('/api/budget-history/:nhcCode', async (req, res) => {
+  let pool;
+  try {
+    const nhcCode = req.params.nhcCode;
+    const cnic = String(req.query.cnic || '').trim();
+
+    if (!nhcCode) {
+      return res.status(400).json({ error: 'NHC Code is required' });
+    }
+    if (!cnic) {
+      return res.status(400).json({ error: 'Treasurer CNIC is required' });
+    }
+
+    pool = await sql.connect(dbConfig);
+
+    const userRes = await pool.request()
+      .input('CNIC', sql.NVarChar, cnic)
+      .query('SELECT Role FROM Users WHERE CNIC = @CNIC');
+
+    if (userRes.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const role = String(userRes.recordset[0].Role || '').toLowerCase();
+    let authorized = role === 'treasurer' || role === 'admin';
+
+    if (!authorized) {
+      const userNHCRes = await pool.request()
+        .input('CNIC', sql.NVarChar, cnic)
+        .input('NHC_Code', sql.NVarChar, nhcCode)
+        .query('SELECT Role FROM UserNHCs WHERE UserCNIC = @CNIC AND NHC_Code = @NHC_Code');
+      authorized = userNHCRes.recordset.some(r => String(r.Role || '').toLowerCase() === 'treasurer' || String(r.Role || '').toLowerCase() === 'admin');
+    }
+
+    if (!authorized) {
+      return res.status(403).json({ error: 'User is not authorized to view budget history' });
+    }
+
+    const historyRes = await pool.request()
+      .input('NHC_Code', sql.NVarChar, nhcCode)
+      .query(`
+        SELECT
+          cal.Id,
+          cal.ComplaintId,
+          cal.ActorCNIC,
+          cal.ActorRole,
+          cal.ActionType,
+          cal.RemarksSnapshot,
+          cal.DecisionSnapshot,
+          cal.StatusSnapshot,
+          cal.CreatedDate,
+          c.Category,
+          c.Description,
+          c.BudgetAllocatedAmount,
+          c.BudgetCategory,
+          c.BudgetAllocationStatus
+        FROM ComplaintActivityLog cal
+        INNER JOIN Complaints c ON c.Id = cal.ComplaintId
+        WHERE c.NHC_Code = @NHC_Code
+          AND cal.ActionType IN ('budget-allocated', 'budget-released', 'budget-rejected')
+        ORDER BY cal.CreatedDate DESC, cal.Id DESC
+      `);
+
+    res.json(historyRes.recordset || []);
+  } catch (err) {
+    console.error('Error fetching budget history:', err);
+    res.status(500).json({ error: 'Failed to fetch budget history' });
   } finally {
     if (pool) await pool.close();
   }
@@ -3753,7 +4522,7 @@ app.get('/api/panels', async (req, res) => {
   try {
     pool = await new sql.ConnectionPool(dbConfig).connect();
     await ensurePanelTablesExist(pool);
-    let query = `SELECT p.Id, p.PanelName, p.PresidentCNIC, p.NHC_Id,
+    let query = `SELECT p.Id, p.PanelName, p.PresidentCNIC, p.NHC_Id, p.IsCommittee,
         COALESCE(pc.ComplaintId, p.ComplaintId) AS ComplaintId,
         p.Description, p.Status, p.CreatedDate,
           c.Category AS ComplaintCategory, c.Status AS ComplaintStatus,
@@ -3800,8 +4569,8 @@ app.get('/api/panels', async (req, res) => {
     }
     if (committeeOnly) {
       conditions.push('ISNULL(p.IsCommittee, 0) = 1');
-      // Committees must have a complaint assigned (nomination panels don't)
-      conditions.push('(COALESCE(pc.ComplaintId, p.ComplaintId) IS NOT NULL)');
+      // Show active committees even if they currently have no complaint assigned yet
+      conditions.push("p.Status IN ('active', 'completed', 'complete')");
     }
     if (conditions.length > 0) {
       query += ' WHERE ' + conditions.join(' AND ');

@@ -16,6 +16,7 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
   const [budgetAmount, setBudgetAmount] = useState('');
   const [budgetReason, setBudgetReason] = useState('');
   const [moreWorkNeeded, setMoreWorkNeeded] = useState('');
+  const [resolutionDescription, setResolutionDescription] = useState('');
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -31,12 +32,15 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
     if (value === 'solved') {
       return isPresident && allowPresidentReview ? 'Resolved' : 'Pending President Review';
     }
+    if (value === 'budget') {
+      return 'Pending President Review';
+    }
     return 'In-Progress';
   };
 
   const decisionLabelMap = {
     budget: 'Budget Needed',
-    solved: 'Recommend Resolution in Meeting',
+    solved: 'Issue Solve in Meating',
     inprogress: 'Need More Work / Still In Progress',
   };
 
@@ -107,6 +111,17 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
         return;
       }
     }
+    if (decision === 'solved') {
+      const isPresidentReview = isPresident && allowPresidentReview;
+      if (!isPresidentReview && !minutesFile) {
+        alert('Please upload resolution photos.');
+        return;
+      }
+      if (!isPresidentReview && !String(resolutionDescription || '').trim()) {
+        alert('Please describe how the issue was resolved.');
+        return;
+      }
+    }
     if (decision === 'inprogress' && !String(moreWorkNeeded || '').trim()) {
       alert('Please enter what more work is needed.');
       return;
@@ -136,6 +151,7 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
         budgetAmount: decision === 'budget' ? budgetAmount.trim() : '',
         budgetReason: decision === 'budget' ? budgetReason.trim() : '',
         moreWorkNeeded: decision === 'inprogress' ? moreWorkNeeded.trim() : '',
+        resolutionDescription: decision === 'solved' ? resolutionDescription.trim() : '',
       });
       alert(
         isPresident && allowPresidentReview
@@ -298,6 +314,8 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
             onChange={() => {
               setDecision('budget');
               setMoreWorkNeeded('');
+              setMinutesFile(null);
+              setResolutionDescription('');
             }}
             disabled={isPresident && !allowPresidentReview}
             style={{ width: '18px', height: '18px' }}
@@ -347,9 +365,29 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
           {decisionLabelMap.solved}
         </label>
         {decision === 'solved' ? (
-          <p style={{ margin: '0 0 12px 28px', color: '#475569', fontSize: '13px', lineHeight: 1.5 }}>
-            This recommendation will be saved as pending president review unless you are a president finalizing the complaint.
-          </p>
+          <div style={{ marginBottom: '12px', marginLeft: '28px' }}>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', color: '#1f2937' }}>
+              Attach Resolution Evidence
+            </label>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => setMinutesFile(e.target.files[0] || null)}
+              disabled={isPresident && !allowPresidentReview}
+              style={{ marginBottom: '12px' }}
+            />
+            <textarea
+              value={resolutionDescription}
+              onChange={(e) => setResolutionDescription(e.target.value)}
+              disabled={isPresident && !allowPresidentReview}
+              placeholder="Describe how the issue was resolved and confirm completion"
+              style={{
+                ...inputStyle,
+                minHeight: '120px',
+                resize: 'vertical',
+              }}
+            />
+          </div>
         ) : null}
         <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '15px', color: '#1f2937' }}>
           <input
@@ -360,6 +398,8 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
               setDecision('inprogress');
               setBudgetAmount('');
               setBudgetReason('');
+              setMinutesFile(null);
+              setResolutionDescription('');
             }}
             disabled={isPresident && !allowPresidentReview}
             style={{ width: '18px', height: '18px' }}

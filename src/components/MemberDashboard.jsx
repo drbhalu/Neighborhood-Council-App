@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './AdminDashboard.css';
 import EditProfile from './EditProfile';
 import ThreeDotMenu from './ThreeDotMenu';
@@ -18,6 +18,7 @@ import ActiveCommittees from './ActiveCommittees'; // NEW: Added Import
 import CreateCommitteeScreen from './CreateCommitteeScreen';
 import CommitteeMeetingScreen from './CommitteeMeetingScreen';
 import SuggestionsForm from './SuggestionsForm'; // NEW: Added Import
+import TreasurerBudgetManagement from './TreasurerBudgetManagement'; // NEW: Added Import
 import { updateUser, getComplaintsByNHC, getPanels, getUserRoleInNHC } from '../api';
 import logo from '../assets/logo.png';
  
@@ -33,6 +34,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const [showComplaintForm, setShowComplaintForm] = useState(false); // NEW: Added State for Complaint Form
   const [showMyComplaints, setShowMyComplaints] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false); // NEW: State for Suggestions Form
+  const [showTreasurerBudget, setShowTreasurerBudget] = useState(false); // NEW: State for Treasurer Budget
   const [complaints, setComplaints] = useState([]);
   const [complaintStatsLoading, setComplaintStatsLoading] = useState(false);
   const [memberCommittees, setMemberCommittees] = useState([]);
@@ -50,7 +52,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
   const hasCommitteeMembership = memberCommittees.length > 0;
   const committeeBackView = isPresident ? 'list' : 'complaints';
 
-  const fetchMyCommittees = async () => {
+  const fetchMyCommittees = useCallback(async () => {
     try {
       const data = await getPanels({
         cnic: currentUser.cnic,
@@ -62,7 +64,7 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
       console.error('Error fetching user committees:', err);
       setMemberCommittees([]);
     }
-  };
+  }, [currentUser.cnic, currentUser.nhcId]);
 
   const committeeGroups = Object.values(
     memberCommittees.reduce((acc, committee) => {
@@ -133,7 +135,23 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
     if (currentUser?.cnic) {
       fetchMyCommittees();
     }
-  }, [currentUser.cnic, currentUser.nhcId]);
+  }, [currentUser.cnic, fetchMyCommittees]);
+
+  useEffect(() => {
+    if (!showCommittee || !currentUser?.cnic) return;
+
+    const refreshCommittees = () => {
+      fetchMyCommittees();
+    };
+
+    const intervalId = setInterval(refreshCommittees, 5000);
+    window.addEventListener('focus', refreshCommittees);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', refreshCommittees);
+    };
+  }, [showCommittee, currentUser.cnic, fetchMyCommittees]);
 
   useEffect(() => {
     if (isPresident && currentUser.nhcCode) {
@@ -463,6 +481,13 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
               setCommitteeView(isPresident ? 'list' : 'names');
             }}>
               Committee ({currentUser.role})
+            </button>
+          )}
+
+          {/* Treasurer Budget button */}
+          {currentUser.role === 'Treasurer' && (
+            <button className="menu-btn" onClick={() => setShowTreasurerBudget(true)}>
+              Budget Requests
             </button>
           )}
           
@@ -871,23 +896,6 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
                         Request Budget
                       </button>
 
-                      <button
-                        onClick={() => {
-                          alert('Upload resolution photos feature will be available here soon.');
-                        }}
-                        style={{
-                          padding: '8px 10px',
-                          border: 'none',
-                          borderRadius: '8px',
-                          backgroundColor: '#7c3aed',
-                          color: 'white',
-                          fontSize: '13px',
-                          fontWeight: '700',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Upload Resolution Photos
-                      </button>
                     </div>
                   </div>
                 ))
@@ -1213,6 +1221,53 @@ const MemberDashboard = ({ user, onLogout, onRequestNHCPage, onBackToChooseNHC }
         />
       )}
 
+      {/* Treasurer Budget Management Screen */}
+      {showTreasurerBudget && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 999,
+            padding: '20px',
+            overflowY: 'auto',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowTreasurerBudget(false);
+            }
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)',
+              width: '100%',
+              maxWidth: '900px',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <TreasurerBudgetManagement
+                user={currentUser}
+                nhcCode={currentUser.nhcCode}
+                onBack={() => setShowTreasurerBudget(false)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* FOOTER: LOGOUT */}
       <div style={{ marginTop: '30px', marginBottom: '30px', textAlign: 'center' }}>
