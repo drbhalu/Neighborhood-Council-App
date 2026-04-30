@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getComplaintHistory, saveCommitteeMeetingDecision, sendNotification, getAllUsers } from '../api';
+import { getComplaintHistory, saveCommitteeMeetingDecision } from '../api';
 
 const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPresidentReview = false, nhcCode }) => {
   const normalizeDecision = (value) => {
@@ -267,31 +267,6 @@ const CommitteeMeetingScreen = ({ committee, user, onBack, onSaved, allowPreside
       
       console.log('Final Status Set:', requestStatus, 'President Decision:', presidentDecisionStatus);
       
-      // Send notification to all NHC members when president finalizes
-      if (isPresidentFinalReview && nhcCode) {
-        try {
-          const allUsers = await getAllUsers();
-          const nhcMembers = allUsers.filter(u => u.NHC_Code && u.NHC_Code.split(', ').includes(nhcCode));
-          
-          const decisionText = presidentDecisionStatus === 'approved' ? '✅ Approved' : 
-                              presidentDecisionStatus === 'rejected' ? '❌ Rejected' : 
-                              '❓ Needs More Information';
-          
-          const notificationMessage = `President's Final Review: Complaint "${committee?.ComplaintCategory || 'Complaint'}" has been ${decisionText}. Status: ${requestStatus}. ${presidentDecisionReason ? 'Details: ' + presidentDecisionReason : ''}`;
-          
-          for (const member of nhcMembers) {
-            await sendNotification({ 
-              recipientCnic: member.CNIC, 
-              message: notificationMessage, 
-              nhcCode 
-            });
-          }
-          console.log(`Notification sent to ${nhcMembers.length} NHC members`);
-        } catch (notificationErr) {
-          console.error('Error sending notifications:', notificationErr);
-          // Don't fail the whole operation if notification fails
-        }
-      }
       alert(
         isPresident && allowPresidentReview
           ? 'Complaint finalized successfully.'

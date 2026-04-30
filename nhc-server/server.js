@@ -262,6 +262,23 @@ async function initDB() {
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'NHC_Code' AND Object_ID = OBJECT_ID('Notifications'))
       ALTER TABLE Notifications ADD NHC_Code NVARCHAR(100) NULL;
     `);
+    // Add context metadata columns for notification details
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'NotificationType' AND Object_ID = OBJECT_ID('Notifications'))
+      ALTER TABLE Notifications ADD NotificationType NVARCHAR(50) NULL;
+    `);
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'RelatedComplaintId' AND Object_ID = OBJECT_ID('Notifications'))
+      ALTER TABLE Notifications ADD RelatedComplaintId INT NULL;
+    `);
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'RelatedElectionId' AND Object_ID = OBJECT_ID('Notifications'))
+      ALTER TABLE Notifications ADD RelatedElectionId INT NULL;
+    `);
+    await nhcPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE Name = N'RelatedMeetingId' AND Object_ID = OBJECT_ID('Notifications'))
+      ALTER TABLE Notifications ADD RelatedMeetingId INT NULL;
+    `);
     console.log("✓ Table Notifications ready.");
 
     // --- NEW: CREATE POSITIONS TABLE ---
@@ -1026,7 +1043,7 @@ app.put('/api/nhc/nomination', async (req, res) => {
       .input('NHC_Code', sql.NVarChar, nhcName)
       .query("SELECT u.CNIC FROM Users u JOIN UserNHCs m ON u.CNIC = m.UserCNIC WHERE m.NHC_Code = @NHC_Code");
     
-    console.log(`📢 Found ${membersResult.recordset.length} members in NHC: ${nhcName}`);
+    console.log(`Found ${membersResult.recordset.length} members in NHC: ${nhcName}`);
     
     for (const member of membersResult.recordset) {
       try {
@@ -1036,7 +1053,7 @@ app.put('/api/nhc/nomination', async (req, res) => {
           .query("INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)");
         console.log(`✓ Notification sent to ${member.CNIC}`);
       } catch (noteErr) {
-        console.error(`❌ Failed to send notification to ${member.CNIC}:`, noteErr);
+        console.error(`Failed to send notification to ${member.CNIC}:`, noteErr);
       }
     }
     
@@ -1135,7 +1152,9 @@ app.put('/api/nhc/election', async (req, res) => {
         await pool.request()
           .input('RecipientCNIC', sql.NVarChar, member.CNIC)
           .input('Message', sql.NVarChar(sql.MAX), `Election period for ${nhcName} is set from ${electionStartDate} to ${electionEndDate}`)
-          .query("INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)");
+          .input('NotificationType', sql.NVarChar, 'election_scheduled')
+          .input('RelatedElectionId', sql.Int, id)
+          .query("INSERT INTO Notifications (RecipientCNIC, Message, NotificationType, RelatedElectionId) VALUES (@RecipientCNIC, @Message, @NotificationType, @RelatedElectionId)");
         console.log(`✓ Notification sent to ${member.CNIC}`);
       } catch (noteErr) {
         console.error(`❌ Failed to send notification to ${member.CNIC}:`, noteErr);
@@ -1703,6 +1722,37 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
+// GET SINGLE USER BY CNIC (For notification context)
+app.get('/api/user/:cnic', async (req, res) => {
+  let pool;
+  try {
+    const { cnic } = req.params;
+    pool = await sql.connect(dbConfig);
+    
+    const result = await pool.request()
+      .input('CNIC', sql.NVarChar, cnic)
+      .query(`
+        SELECT u.Id, u.FirstName, u.LastName, u.CNIC, u.Email, u.Role, u.CreatedDate,
+               STUFF((SELECT ', ' + m.NHC_Code
+                      FROM UserNHCs m
+                      WHERE m.UserCNIC = u.CNIC
+                      FOR XML PATH('')),1,2,'') AS NHC_Code
+        FROM Users u
+        WHERE u.CNIC = @CNIC
+      `);
+    
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json(result.recordset[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
 // 6.1 DELETE USER (Admin)
 app.delete('/api/users/:id', async (req, res) => {
   const userId = parseInt(req.params.id, 10);
@@ -1833,7 +1883,7 @@ app.post('/api/panels/:id/schedule-meeting', async (req, res) => {
   const panelId = parseInt(req.params.id, 10);
   const { meetingDate, meetingTime, reason, scheduledByCnic } = req.body;
 
-  console.log('🔵 Schedule meeting request:', { panelId, meetingDate, meetingTime, reason, scheduledByCnic });
+  console.log('Schedule meeting request:', { panelId, meetingDate, meetingTime, reason, scheduledByCnic });
 
   if (!panelId || !meetingDate || !meetingTime || !reason || !scheduledByCnic) {
     console.error('❌ Missing required fields:', { panelId, meetingDate, meetingTime, reason, scheduledByCnic });
@@ -1848,7 +1898,7 @@ app.post('/api/panels/:id/schedule-meeting', async (req, res) => {
       .input('PanelId', sql.Int, panelId)
       .query('SELECT Id, PanelName FROM Panels WHERE Id = @PanelId');
 
-    console.log('✓ Panel query result:', panelRes.recordset);
+    console.log('Panel query result:', panelRes.recordset);
 
     if (panelRes.recordset.length === 0) {
       console.error('❌ Committee not found with ID:', panelId);
@@ -1861,7 +1911,7 @@ app.post('/api/panels/:id/schedule-meeting', async (req, res) => {
       .input('PanelId', sql.Int, panelId)
       .query('SELECT CNIC FROM PanelMembers WHERE PanelId = @PanelId');
 
-    console.log('✓ Members query result:', membersRes.recordset);
+    console.log('Members query result:', membersRes.recordset);
 
     if (membersRes.recordset.length === 0) {
       console.error('❌ No committee members found for panel:', panelId);
@@ -1870,8 +1920,8 @@ app.post('/api/panels/:id/schedule-meeting', async (req, res) => {
 
     const message = `Meeting called for ${panelName} on ${meetingDate} at ${meetingTime}. Reason: ${reason}`;
 
-    console.log('✓ Notification message:', message);
-    console.log('✓ Sending notifications to', membersRes.recordset.length, 'members');
+    console.log('Notification message:', message);
+    console.log('Sending notifications to', membersRes.recordset.length, 'members');
 
     let notifySent = 0;
     for (const member of membersRes.recordset) {
@@ -1880,18 +1930,20 @@ app.post('/api/panels/:id/schedule-meeting', async (req, res) => {
           .input('RecipientCNIC', sql.NVarChar, member.CNIC)
           .input('Message', sql.NVarChar(sql.MAX), message)
           .input('PanelId', sql.Int, panelId)
-          .query('INSERT INTO Notifications (RecipientCNIC, Message, PanelId) VALUES (@RecipientCNIC, @Message, @PanelId)');
+          .input('NotificationType', sql.NVarChar, 'meeting_scheduled')
+          .input('RelatedMeetingId', sql.Int, panelId)
+          .query('INSERT INTO Notifications (RecipientCNIC, Message, PanelId, NotificationType, RelatedMeetingId) VALUES (@RecipientCNIC, @Message, @PanelId, @NotificationType, @RelatedMeetingId)');
         notifySent++;
-        console.log('✓ Notification sent to', member.CNIC);
+        console.log('Notification sent to', member.CNIC);
       } catch (notifyErr) {
         console.error('❌ Notification insert failed for', member.CNIC, notifyErr);
       }
     }
 
-    console.log('✓ Successfully sent', notifySent, 'notifications');
+    console.log('Successfully sent', notifySent, 'notifications');
     res.status(200).json({ message: 'Meeting scheduled and notifications sent successfully.', notificationsSent: notifySent });
   } catch (err) {
-    console.error('❌ Schedule committee meeting error:', err);
+    console.error('Schedule committee meeting error:', err);
     res.status(500).json({ error: err.message });
   } finally {
     if (pool) await pool.close();
@@ -2188,6 +2240,32 @@ app.get('/api/complaints', async (req, res) => {
   }
 });
 
+// GET: Complaint by ID (For notification context)
+app.get('/api/complaint/:id', async (req, res) => {
+  let pool;
+  try {
+    const complaintId = parseInt(req.params.id, 10);
+    if (!complaintId) {
+      return res.status(400).json({ error: 'Valid complaint ID is required' });
+    }
+    
+    pool = await sql.connect(dbConfig);
+    const result = await pool.request()
+      .input('Id', sql.Int, complaintId)
+      .query('SELECT * FROM Complaints WHERE Id = @Id');
+    
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Complaint not found' });
+    }
+    
+    res.json(result.recordset[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (pool) await pool.close();
+  }
+});
+
 // GET: User's Complaints
 app.get('/api/complaints/:userCnic', async (req, res) => {
   let pool;
@@ -2408,7 +2486,9 @@ app.put('/api/complaints/:id/resolution', complaintUpload.array('resolutionPhoto
       await pool.request()
         .input('RecipientCNIC', sql.NVarChar, owner.UserCNIC)
         .input('Message', sql.NVarChar(sql.MAX), `Committee updated your complaint (${owner.Category || 'Complaint'}) with resolution details.`)
-        .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+        .input('NotificationType', sql.NVarChar, 'complaint_resolution')
+        .input('RelatedComplaintId', sql.Int, complaintId)
+        .query('INSERT INTO Notifications (RecipientCNIC, Message, NotificationType, RelatedComplaintId) VALUES (@RecipientCNIC, @Message, @NotificationType, @RelatedComplaintId)');
     } catch (notifyErr) {
       console.error('Failed to notify complaint owner after resolution update:', notifyErr);
     }
@@ -2556,6 +2636,23 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
       statusSnapshot: normalizedStatus,
     });
 
+    let committeeMemberCnicList = [];
+    if (normalizedStatus === 'Resolved') {
+      const committeeMembersRes = await pool.request()
+        .input('ComplaintId', sql.Int, complaintId)
+        .query(`
+          SELECT DISTINCT pm.CNIC AS MemberCNIC
+          FROM PanelMembers pm
+          INNER JOIN Panels p ON p.Id = pm.PanelId
+          INNER JOIN PanelComplaints pc ON pc.PanelId = p.Id
+          WHERE pc.ComplaintId = @ComplaintId
+        `);
+
+      committeeMemberCnicList = committeeMembersRes.recordset
+        .map((row) => String(row.MemberCNIC || '').trim())
+        .filter(Boolean);
+    }
+
     // When president finalizes as resolved, detach this complaint from active committee assignments.
     if (actorRole === 'president' && normalizedStatus === 'Resolved') {
       await pool.request()
@@ -2582,19 +2679,7 @@ app.put('/api/complaints/:id/committee-meeting', meetingMinutesUpload.single('mi
         const recipients = new Set();
         if (owner.UserCNIC) recipients.add(String(owner.UserCNIC));
 
-        const panelMembersRes = await pool.request()
-          .input('ComplaintId', sql.Int, complaintId)
-          .query(`
-            SELECT DISTINCT pm.CNIC AS MemberCNIC
-            FROM PanelMembers pm
-            INNER JOIN Panels p ON p.Id = pm.PanelId
-            LEFT JOIN PanelComplaints pc ON pc.PanelId = p.Id
-            WHERE p.ComplaintId = @ComplaintId OR pc.ComplaintId = @ComplaintId
-          `);
-
-        panelMembersRes.recordset.forEach((row) => {
-          if (row.MemberCNIC) recipients.add(String(row.MemberCNIC));
-        });
+        committeeMemberCnicList.forEach((memberCnic) => recipients.add(memberCnic));
 
           // Fetch owner name for clearer notifications
           let ownerName = '';
@@ -2683,7 +2768,7 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
     // Verify complaint exists
     const complaintRes = await pool.request()
       .input('Id', sql.Int, complaintId)
-      .query('SELECT Id, UserCNIC, Category, Status, HasBudget, BudgetAllocationStatus, NHC_Code FROM Complaints WHERE Id = @Id');
+      .query('SELECT Id, UserCNIC, Category, Status, HasBudget, BudgetAllocationStatus, NHC_Code, Title FROM Complaints WHERE Id = @Id');
 
     if (complaintRes.recordset.length === 0) {
       return res.status(404).json({ error: 'Complaint not found' });
@@ -2779,7 +2864,7 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
       statusSnapshot: newStatus,
     });
 
-    // If approved and this is a final complaint resolution, complete the panel assignment
+    // If approved and this is a final complaint resolution, remove complaint from panel but keep panel active for future complaints
     if (action === 'approve' && !isBudgetApproval) {
       const panelRes = await pool.request()
         .input('ComplaintId', sql.Int, complaintId)
@@ -2790,16 +2875,16 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
         `);
 
       for (const panel of panelRes.recordset) {
-        // Mark panel as completed
+        // Remove the complaint from the panel's assignments (so panel stays active for future complaints)
         await pool.request()
           .input('PanelId', sql.Int, panel.Id)
+          .input('ComplaintId', sql.Int, complaintId)
           .query(`
-            UPDATE Panels
-            SET Status = 'completed', CompletedDate = GETDATE()
-            WHERE Id = @PanelId
+            DELETE FROM PanelComplaints
+            WHERE PanelId = @PanelId AND ComplaintId = @ComplaintId
           `);
 
-        // Add to panel history
+        // Log to panel history for audit purposes
         await pool.request()
           .input('PanelId', sql.Int, panel.Id)
           .input('ComplaintId', sql.Int, complaintId)
@@ -2820,12 +2905,13 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
 
     // Send notifications
     try {
+      const complaintTitle = complaint.Title || 'Complaint';
       const messageMap = {
         'approve': isBudgetApproval
-          ? `✅ ${ownerLabel}, your budget request for Complaint #${complaintId} was APPROVED by the president. The treasurer can now release the funds to the committee.`
-          : `✅ ${ownerLabel}, your complaint (ID: ${complaintId}) has been APPROVED by the president and marked as Resolved.`,
-        'reject': `❌ ${ownerLabel}, your complaint (ID: ${complaintId}) was REJECTED by the president. Feedback: ${presidentComments}`,
-        'request-changes': `📝 ${ownerLabel}, the president requested changes for Complaint #${complaintId}. Feedback: ${presidentComments}`
+          ? `✅ ${ownerLabel}, your budget request for "${complaintTitle}" (ID: ${complaintId}) was APPROVED by the president. The treasurer can now release the funds to the committee.`
+          : `✅ ${ownerLabel}, your complaint "${complaintTitle}" (ID: ${complaintId}) has been APPROVED by the president and marked as Resolved.`,
+        'reject': `❌ ${ownerLabel}, your complaint "${complaintTitle}" (ID: ${complaintId}) was REJECTED by the president. Feedback: ${presidentComments}`,
+        'request-changes': `📝 ${ownerLabel}, the president requested changes for "${complaintTitle}" (ID: ${complaintId}). Feedback: ${presidentComments}`
       };
 
       // Notify committee
@@ -2843,17 +2929,22 @@ app.put('/api/complaints/:id/president-approval', async (req, res) => {
         await pool.request()
           .input('RecipientCNIC', sql.NVarChar, member.CNIC)
           .input('Message', sql.NVarChar(sql.MAX), messageMap[action])
-          .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+          .input('NotificationType', sql.NVarChar, 'complaint_update')
+          .input('RelatedComplaintId', sql.Int, complaintId)
+          .query('INSERT INTO Notifications (RecipientCNIC, Message, NotificationType, RelatedComplaintId) VALUES (@RecipientCNIC, @Message, @NotificationType, @RelatedComplaintId)');
       }
 
       // Notify complainant
       if (action === 'approve') {
+        const complaintTitle = complaint.Title || 'Complaint';
         await pool.request()
           .input('RecipientCNIC', sql.NVarChar, complaint.UserCNIC)
           .input('Message', sql.NVarChar(sql.MAX), isBudgetApproval
-            ? `✅ ${ownerLabel}, your budget request for Complaint #${complaintId} was approved by the president. The treasurer can now release the funds.`
-            : `✅ ${ownerLabel}, your complaint (ID: ${complaintId}) has been resolved following the president's approval.`)
-          .query('INSERT INTO Notifications (RecipientCNIC, Message) VALUES (@RecipientCNIC, @Message)');
+            ? `${ownerLabel}, your budget request "${complaintTitle}" (ID: ${complaintId}) was approved by the president.`
+            : `${ownerLabel}, your complaint "${complaintTitle}" (ID: ${complaintId}) has been resolved by the president.`)
+          .input('NotificationType', sql.NVarChar, 'complaint_approval')
+          .input('RelatedComplaintId', sql.Int, complaintId)
+          .query('INSERT INTO Notifications (RecipientCNIC, Message, NotificationType, RelatedComplaintId) VALUES (@RecipientCNIC, @Message, @NotificationType, @RelatedComplaintId)');
       }
     } catch (notifyErr) {
       console.error('Failed to send notifications after president approval:', notifyErr);
@@ -3252,9 +3343,11 @@ app.put('/api/complaints/:id/release-budget', async (req, res) => {
         await pool.request()
           .input('RecipientCNIC', sql.NVarChar, member.CNIC)
           .input('Message', sql.NVarChar(sql.MAX), notificationMessage)
+          .input('NotificationType', sql.NVarChar, 'budget_released')
+          .input('RelatedComplaintId', sql.Int, complaintId)
           .query(`
-            INSERT INTO Notifications (RecipientCNIC, Message)
-            VALUES (@RecipientCNIC, @Message)
+            INSERT INTO Notifications (RecipientCNIC, Message, NotificationType, RelatedComplaintId)
+            VALUES (@RecipientCNIC, @Message, @NotificationType, @RelatedComplaintId)
           `);
         }
     } catch (notifyErr) {
